@@ -1,0 +1,560 @@
+//! Bank/format agnostic representation of a bank statement.
+//!
+//! The camt.053 XML schema (see [`crate::camt053::schema`]) models the full
+//! ISO 20022 message, which is far richer than what this tool needs. This
+//! module reduces a parsed [`Document`] down to a small set of structs
+//! ([`SimpleStatement`] / [`Transaction`]) holding only the fields required
+//! for display or MT940 export: account IBAN, amount, counterparty IBAN,
+//! counterparty name and description.
+
+use super::abnamro::abnamro_clean_description;
+use crate::camt053::schema::{self, Document};
+use crate::camt053::{import_camt, import_camt_from_reader};
+use crate::error::CamtError;
+use chrono::NaiveDate;
+use std::fmt::Display;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
+
+/// A single booked transaction, reduced to the fields required for most use cases.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimpleTransaction {
+    /// IBAN of the account the transaction belongs to.
+    pub account_iban: String,
+    /// Date the transaction was booked by the bank.
+    pub book_date: NaiveDate,
+    /// Value date of the transaction (may differ from `book_date`).
+    pub value_date: NaiveDate,
+    /// Signed amount: negative for debit, positive for credit.
+    pub amount: f64,
+    /// IBAN of the counterparty account, if known.
+    pub counter_iban: Option<String>,
+    /// Name of the counterparty, if known.
+    pub counter_name: Option<String>,
+    /// Free-text description of the transaction (remittance information or
+    /// bank-supplied additional info).
+    pub description: String,
+}
+
+impl SimpleTransaction {
+    fn from_entry(account_iban: &str, entry: &schema::Entry) -> Result<Self, CamtError> {
+        let description = if account_iban.contains("ABNA") {
+            let description = entry.description(account_iban)?;
+            if description.contains("/REMI/") {
+                let sepa = super::abnamro::SepaTransaction::parse(&description);
+                sepa.remittance_info.unwrap_or(description)
+            } else {
+                abnamro_clean_description(&entry.description(account_iban)?)
+            }
+        } else {
+            entry.description(account_iban)?
+        };
+        let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        // let counter_name = if let Some(name) = entry.counter_name() {
+        //     Some(name.trim().to_string())
+        // } else if account_iban.contains("ABNA") {
+        //     Some("ABN AMRO Bank".to_string())
+        // } else if account_iban.contains("SNSB") {
+        //     Some("ASN Bank (SNS)".to_string())
+        // } else if account_iban.contains("INGB") {
+        //     Some("ING Bank".to_string())
+        // } else {
+        //     None
+        // };
+
+        Ok(SimpleTransaction {
+            account_iban: account_iban.to_string(),
+            book_date: entry.book_date()?,
+            value_date: entry.val_date()?,
+            amount: entry.amount(),
+            counter_iban: entry.counter_iban(),
+            counter_name: entry.counter_name(),
+            description,
+        })
+    }
+}
+
+impl Display for SimpleTransaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {:>10.2}  {:<22} {:<50}\n{:23}{}",
+            self.book_date,
+            self.amount,
+            self.counter_iban.as_deref().unwrap_or(""),
+            ellipsis_middle(self.counter_name.as_deref().unwrap_or(""), 50),
+            "",
+            ellipsis_end(&self.description, 80),
+        )
+    }
+}
+
+/// A statement: opening/closing balance plus the transactions in between.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimpleStatement {
+    /// IBAN (or other identification) of the account this statement belongs to.
+    pub account: String,
+    /// Date of the opening balance.
+    pub opening_date: NaiveDate,
+    /// Opening balance, signed (negative when the account is overdrawn).
+    pub opening_amount: f64,
+    /// Date of the closing balance.
+    pub closing_date: NaiveDate,
+    /// Closing balance, signed (negative when the account is overdrawn).
+    pub closing_amount: f64,
+    /// Transactions booked between the opening and closing balance.
+    pub transactions: Vec<SimpleTransaction>,
+}
+
+impl SimpleStatement {
+    /// Parses the given camt.053 file (plain `.xml` or `.zip` containing several `.xml` files)
+    /// and reduces it to the simplified, format agnostic statement structs.
+    pub fn load<T: AsRef<Path>>(camt_file: T) -> Result<Vec<SimpleStatement>, CamtError> {
+        let camt_file = camt_file.as_ref();
+        if camt_file.extension().is_some_and(|ext| ext == "zip") {
+            let zip_file = File::open(camt_file)?;
+            let mut archive = zip::ZipArchive::new(zip_file)?;
+            let mut statements = Vec::new();
+            for i in 0..archive.len() {
+                let file = archive.by_index(i)?;
+                if file.name().ends_with(".xml") {
+                    let reader = BufReader::new(file);
+                    let doc = import_camt_from_reader(reader)?;
+                    statements.extend(convert(&doc)?);
+                }
+            }
+            merge_statements(statements)
+        } else {
+            let doc = import_camt(camt_file)?;
+            convert(&doc)
+        }
+    }
+
+    /// Builds a [`SimpleStatement`] from a raw `schema::Statement`,
+    /// validating that the opening/closing balances match the transaction
+    /// sum.
+    pub fn from_statement(statement: &schema::Statement) -> Result<Self, CamtError> {
+        let account = statement.identification()?.to_string();
+
+        let opening = statement.opening_or_closing_previous_day().ok_or_else(|| {
+            CamtError::MissingBalance {
+                account: account.clone(),
+                kind: "opening (or previous day closing)",
+            }
+        })?;
+        let opening_date = opening.date()?;
+
+        let closing = statement
+            .closing()
+            .ok_or_else(|| CamtError::MissingBalance {
+                account: account.clone(),
+                kind: "closing",
+            })?;
+        let closing_date = closing.date()?;
+
+        let transactions: Vec<SimpleTransaction> = statement
+            .entry
+            .iter()
+            .map(|entry| Ok((entry.book_date()?, entry)))
+            .collect::<Result<Vec<(NaiveDate, &schema::Entry)>, CamtError>>()?
+            .into_iter()
+            .filter(|(book_date, _)| *book_date <= closing_date)
+            .map(|(_, entry)| SimpleTransaction::from_entry(&account, entry))
+            .collect::<Result<_, _>>()?;
+
+        // Check that the opening and closing balances match the transactions, otherwise
+        // the statement is inconsistent and we should not silently ignore it.
+        let transaction_sum: f64 = transactions.iter().map(|t| t.amount).sum();
+        let expected_closing_amount = opening.amount() + transaction_sum;
+        if (expected_closing_amount - closing.amount()).abs() > 0.005 {
+            return Err(CamtError::InconsistentStatement {
+                account: account.clone(),
+                opening_date,
+                opening_amount: opening.amount(),
+                closing_date,
+                closing_amount: closing.amount(),
+                transaction_sum,
+            });
+        }
+
+        Ok(SimpleStatement {
+            account,
+            opening_date,
+            opening_amount: opening.amount(),
+            closing_date,
+            closing_amount: closing.amount(),
+            transactions,
+        })
+    }
+}
+
+/// Converts a full camt.053 [`Document`] into a list of [`SimpleStatement`]s.
+pub fn convert(doc: &Document) -> Result<Vec<SimpleStatement>, CamtError> {
+    doc.statements()
+        .iter()
+        .map(SimpleStatement::from_statement)
+        .collect()
+}
+
+/// Merges the (typically daily) statements of a zipped camt.053 export into a
+/// single [`SimpleStatement`] per account (IBAN).
+///
+/// Statements for the same account are sorted by opening date and their
+/// transactions concatenated in that order. Consecutive statements are
+/// required to chain without a gap: the closing balance of one statement
+/// must equal the opening balance of the next, and the next statement's
+/// opening date may not be before the previous statement's closing date.
+/// This assumes the zipped statements together cover a contiguous period
+/// (no missing days), which is checked rather than assumed silently: a
+/// balance or date mismatch is reported as a [`CamtError`] describing the
+/// offending pair.
+fn merge_statements(statements: Vec<SimpleStatement>) -> Result<Vec<SimpleStatement>, CamtError> {
+    use std::collections::BTreeMap;
+
+    let mut by_identification: BTreeMap<String, Vec<SimpleStatement>> = BTreeMap::new();
+    for statement in statements {
+        by_identification
+            .entry(statement.account.clone())
+            .or_default()
+            .push(statement);
+    }
+
+    by_identification
+        .into_values()
+        .map(|mut group| {
+            group.sort_by_key(|s| s.opening_date);
+            // `group` is never empty: it only exists because at least one
+            // statement was pushed into it above.
+            let account = group[0].account.clone();
+
+            for pair in group.windows(2) {
+                let (prev, next) = (&pair[0], &pair[1]);
+                if next.opening_date < prev.closing_date {
+                    return Err(CamtError::OverlappingStatements {
+                        account: account.clone(),
+                        prev_closing: prev.closing_date,
+                        next_opening: next.opening_date,
+                    });
+                }
+                if (prev.closing_amount - next.opening_amount).abs() > 0.005 {
+                    return Err(CamtError::BalanceGap {
+                        account: account.clone(),
+                        prev_closing_date: prev.closing_date,
+                        prev_closing_amount: prev.closing_amount,
+                        next_opening_date: next.opening_date,
+                        next_opening_amount: next.opening_amount,
+                    });
+                }
+            }
+
+            let opening_date = group.first().expect("group is never empty").opening_date;
+            let opening_amount = group.first().expect("group is never empty").opening_amount;
+            let closing_date = group.last().expect("group is never empty").closing_date;
+            let closing_amount = group.last().expect("group is never empty").closing_amount;
+
+            let mut transactions: Vec<SimpleTransaction> = group
+                .into_iter()
+                .flat_map(|statement| statement.transactions)
+                .collect();
+            transactions.sort_by_key(|t| (t.book_date, t.value_date));
+
+            Ok(SimpleStatement {
+                account,
+                opening_date,
+                opening_amount,
+                closing_date,
+                closing_amount,
+                transactions,
+            })
+        })
+        .collect()
+}
+
+/// Truncates `s` to at most `max_len` characters, replacing the middle
+/// section with an ellipsis (`...`) when it is too long. Character based
+/// (not byte based), so it is safe to use on any UTF-8 string.
+///
+/// For example, `ellipsis("hello world", 9)` returns `"hel...rld"`, while
+/// `ellipsis("hello world", 20)` returns `"hello world"` unchanged.
+pub fn ellipsis_middle(s: &str, max_len: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max_len {
+        return s.to_string();
+    }
+    if max_len <= 3 {
+        return "...".chars().take(max_len).collect();
+    }
+
+    let keep = max_len - 3;
+    let head = keep.div_ceil(2);
+    let tail = keep - head;
+
+    let head_str: String = chars[..head].iter().collect();
+    let tail_str: String = chars[chars.len() - tail..].iter().collect();
+    format!("{head_str}...{tail_str}")
+}
+
+/// Truncates `s` to at most `max_len` characters, appending an ellipsis
+/// (`...`) when it is too long. Character based (not byte based), so it is
+/// safe to use on any UTF-8 string.
+pub fn ellipsis_end(s: &str, max_len: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max_len {
+        return s.to_string();
+    }
+    if max_len == 0 {
+        return "".to_string();
+    }
+
+    let head_str: String = chars[..max_len].iter().collect();
+    format!("{head_str}...")
+}
+
+#[cfg(test)]
+pub(crate) mod fixtures {
+    /// Minimal camt.053 fixture with one debit entry (creditor counterparty
+    /// known via `CdtrAcct`) and one credit entry (debtor counterparty known
+    /// only by name, no account) plus an `AddtlNtryInf` fallback description.
+    ///
+    /// Shared with the `mt940` module tests.
+    pub const TEST_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Document>
+  <BkToCstmrStmt>
+    <GrpHdr>
+      <MsgId>MSG-1</MsgId>
+      <CreDtTm>2026-07-22T17:25:22.324+02:00</CreDtTm>
+    </GrpHdr>
+    <Stmt>
+      <Id>0000000000</Id>
+      <CreDtTm>2026-07-22T17:25:22.324+02:00</CreDtTm>
+      <Acct>
+        <Id>
+          <IBAN>NL00SNSB0000000000</IBAN>
+        </Id>
+        <Ccy>EUR</Ccy>
+      </Acct>
+      <Bal>
+        <Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp>
+        <Amt>1000.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Dt><Dt>2026-01-01</Dt></Dt>
+      </Bal>
+      <Bal>
+        <Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp>
+        <Amt>950.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Dt><Dt>2026-07-21</Dt></Dt>
+      </Bal>
+      <Ntry>
+        <Amt>100.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts>BOOK</Sts>
+        <BookgDt><Dt>2026-03-05</Dt></BookgDt>
+        <ValDt><Dt>2026-03-05</Dt></ValDt>
+        <NtryDtls>
+          <TxDtls>
+            <RltdPties>
+              <Cdtr>
+                <Nm>Some Shop B.V.</Nm>
+              </Cdtr>
+              <CdtrAcct>
+                <Id><IBAN>NL00ABNA0000000001</IBAN></Id>
+              </CdtrAcct>
+            </RltdPties>
+            <RmtInf>
+              <Ustrd>Payment for invoice 123</Ustrd>
+            </RmtInf>
+          </TxDtls>
+        </NtryDtls>
+      </Ntry>
+      <Ntry>
+        <Amt>50.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts>BOOK</Sts>
+        <BookgDt><Dt>2026-04-10</Dt></BookgDt>
+        <ValDt><Dt>2026-04-10</Dt></ValDt>
+        <NtryDtls>
+          <TxDtls>
+            <RltdPties>
+              <Dbtr>
+                <Nm>John Doe</Nm>
+              </Dbtr>
+            </RltdPties>
+          </TxDtls>
+        </NtryDtls>
+        <AddtlNtryInf>Interest payment</AddtlNtryInf>
+      </Ntry>
+    </Stmt>
+  </BkToCstmrStmt>
+</Document>"#;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::TEST_XML;
+    use super::*;
+    use crate::camt053::import_camt_from_reader;
+
+    fn test_statement() -> SimpleStatement {
+        let doc = import_camt_from_reader(TEST_XML.as_bytes()).expect("valid test fixture");
+        convert(&doc).expect("valid statement").remove(0)
+    }
+
+    #[test]
+    fn ellipsis_keeps_short_strings_untouched() {
+        assert_eq!(ellipsis_middle("short", 10), "short");
+        assert_eq!(ellipsis_middle("exact", 5), "exact");
+    }
+
+    #[test]
+    fn ellipsis_truncates_in_the_center() {
+        assert_eq!(ellipsis_middle("hello world", 9), "hel...rld");
+        assert_eq!(ellipsis_middle("abcdefghij", 7), "ab...ij");
+    }
+
+    #[test]
+    fn ellipsis_handles_very_small_max_len() {
+        assert_eq!(ellipsis_middle("hello", 3), "...");
+        assert_eq!(ellipsis_middle("hello", 2), "..");
+        assert_eq!(ellipsis_middle("hello", 0), "");
+    }
+
+    #[test]
+    fn convert_extracts_statement_level_fields() {
+        let statement = test_statement();
+        assert_eq!(statement.account, "NL00SNSB0000000000");
+        assert_eq!(
+            statement.opening_date,
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
+        );
+        assert_eq!(statement.opening_amount, 1000.00);
+        assert_eq!(
+            statement.closing_date,
+            NaiveDate::from_ymd_opt(2026, 7, 21).unwrap()
+        );
+        assert_eq!(statement.closing_amount, 950.00);
+        assert_eq!(statement.transactions.len(), 2);
+    }
+
+    #[test]
+    fn convert_extracts_debit_transaction_with_creditor_counterparty() {
+        let statement = test_statement();
+        let tx = &statement.transactions[0];
+        assert_eq!(tx.account_iban, "NL00SNSB0000000000");
+        assert_eq!(tx.amount, -100.00);
+        assert_eq!(tx.counter_iban.as_deref(), Some("NL00ABNA0000000001"));
+        assert_eq!(tx.counter_name.as_deref(), Some("Some Shop B.V."));
+        assert_eq!(tx.description, "Payment for invoice 123");
+    }
+
+    #[test]
+    fn convert_extracts_credit_transaction_with_debtor_counterparty() {
+        let statement = test_statement();
+        let tx = &statement.transactions[1];
+        assert_eq!(tx.amount, 50.00);
+        assert_eq!(tx.counter_iban, None);
+        assert_eq!(tx.counter_name.as_deref(), Some("John Doe"));
+        // No <RmtInf><Ustrd> present, but <AddtlNtryInf> is used instead.
+        assert_eq!(tx.description, "Interest payment");
+    }
+
+    #[test]
+    fn display_truncates_long_description() {
+        let tx = SimpleTransaction {
+            account_iban: "NL00SNSB0000000000".to_string(),
+            book_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            value_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            amount: 12.34,
+            counter_iban: Some("NL00ABNA0000000001".to_string()),
+            counter_name: Some("Some Shop B.V.".to_string()),
+            description: "x".repeat(300),
+        };
+        let rendered = tx.to_string();
+        assert!(rendered.contains("..."));
+        assert!(rendered.len() < 300);
+    }
+
+    fn statement(
+        iban: &str,
+        opening_date: &str,
+        opening_amount: f64,
+        closing_date: &str,
+        closing_amount: f64,
+    ) -> SimpleStatement {
+        SimpleStatement {
+            account: iban.to_string(),
+            opening_date: NaiveDate::parse_from_str(opening_date, "%Y-%m-%d").unwrap(),
+            opening_amount,
+            closing_date: NaiveDate::parse_from_str(closing_date, "%Y-%m-%d").unwrap(),
+            closing_amount,
+            transactions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn merge_statements_combines_and_sorts_per_account() {
+        let s1 = statement(
+            "NL00SNSB0000000000",
+            "2026-01-02",
+            100.0,
+            "2026-01-02",
+            150.0,
+        );
+        let s2 = statement(
+            "NL00SNSB0000000000",
+            "2026-01-01",
+            50.0,
+            "2026-01-01",
+            100.0,
+        );
+        let merged = merge_statements(vec![s1, s2]).expect("no overlap or balance gap");
+
+        assert_eq!(merged.len(), 1);
+        let m = &merged[0];
+        assert_eq!(m.account, "NL00SNSB0000000000");
+        assert_eq!(m.opening_date, NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+        assert_eq!(m.opening_amount, 50.0);
+        assert_eq!(m.closing_date, NaiveDate::from_ymd_opt(2026, 1, 2).unwrap());
+        assert_eq!(m.closing_amount, 150.0);
+    }
+
+    #[test]
+    fn merge_statements_keeps_accounts_separate() {
+        let a = statement("NL00SNSB0000000001", "2026-01-01", 0.0, "2026-01-01", 10.0);
+        let b = statement("NL00SNSB0000000002", "2026-01-01", 0.0, "2026-01-01", 20.0);
+        let merged = merge_statements(vec![a, b]).expect("no overlap or balance gap");
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn merge_statements_errors_on_balance_gap() {
+        let s1 = statement("NL00SNSB0000000000", "2026-01-01", 0.0, "2026-01-01", 100.0);
+        let s2 = statement(
+            "NL00SNSB0000000000",
+            "2026-01-02",
+            999.0,
+            "2026-01-02",
+            150.0,
+        );
+        let err = merge_statements(vec![s1, s2]).unwrap_err();
+        assert!(matches!(err, CamtError::BalanceGap { .. }));
+        assert!(err.to_string().contains("Balance gap"));
+    }
+
+    #[test]
+    fn merge_statements_errors_on_overlap() {
+        let s1 = statement("NL00SNSB0000000000", "2026-01-01", 0.0, "2026-01-05", 100.0);
+        let s2 = statement(
+            "NL00SNSB0000000000",
+            "2026-01-03",
+            100.0,
+            "2026-01-06",
+            150.0,
+        );
+        let err = merge_statements(vec![s1, s2]).unwrap_err();
+        assert!(matches!(err, CamtError::OverlappingStatements { .. }));
+        assert!(err.to_string().contains("Overlapping"));
+    }
+}
