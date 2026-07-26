@@ -1,6 +1,6 @@
 [package]
 name = "camt053"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "CAMT.053 (ISO 20022) bank statement parser and MT940 converter"
 authors = ["Martin van der Werff <github@newinnovations.nl>"]
@@ -13,7 +13,7 @@ exclude = ["doc/"]
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"], optional = true }
 quick-xml = { version = "0.41", features = ["serialize"] }
 rust_decimal = { version = "1.42.1", features = ["serde-str"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -22,3 +22,7 @@ zip = "8.6"
 
 [dev-dependencies]
 rust_decimal_macros = "1.40.0"
+
+[features]
+default = ["cli"]
+cli = ["clap"]

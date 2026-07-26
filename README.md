@@ -33,6 +33,15 @@ As a library, add it to your `Cargo.toml`:
 camt053 = "0.3"
 ```
 
+The `clap` dependency (used only for the `camt053` command-line binary) is
+gated behind the `cli` feature, which is enabled by default. If you only use
+the library and want to avoid pulling in `clap`, disable default features:
+
+```toml
+[dependencies]
+camt053 = { version = "0.3", default-features = false }
+```
+
 ## Command-line usage
 
 ```sh
