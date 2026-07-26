@@ -1,6 +1,7 @@
 # camt053
 
 [![Crates.io](https://img.shields.io/crates/v/camt053.svg)](https://crates.io/crates/camt053)
+[![CI](https://github.com/newinnovations/camt053/actions/workflows/ci.yml/badge.svg)](https://github.com/newinnovations/camt053/actions/workflows/ci.yml)
 [![Documentation](https://docs.rs/camt053/badge.svg)](https://docs.rs/camt053)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 

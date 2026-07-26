@@ -1,0 +1,55 @@
+name: Release
+
+# Trigger: push a semver tag, e.g. `git tag v0.2.0 && git push --tags`
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  verify-version:
+    name: Verify crate version
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check tag matches Cargo.toml
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          CRATE_VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
+          if [ "$TAG" != "$CRATE_VERSION" ]; then
+            echo "::error::Tag v${TAG} does not match Cargo.toml version ${CRATE_VERSION}"
+            exit 1
+          fi
+          echo "✓ Tag v${TAG} matches Cargo.toml version ${CRATE_VERSION}"
+
+  publish:
+    name: Publish to crates.io
+    needs: [ci, verify-version]
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Dry-run publish (verify everything packs correctly)
+        run: cargo publish --dry-run --allow-dirty
+
+      - name: Publish
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          name: "camt053 ${{ github.ref_name }}"
