@@ -41,7 +41,6 @@ mod camt053;
 mod error;
 mod simple;
 
-pub use camt053::import_camt;
-pub use camt053::schema;
+pub use camt053::schema::{self, Document};
 pub use error::CamtError;
 pub use simple::{SimpleStatement, SimpleTransaction};

@@ -1,7 +1,7 @@
 //! MT940 export, built on top of the bank agnostic [`crate::simple`]
 //! structs rather than directly on the camt.053 schema types.
 
-use crate::simple::{SimpleStatement, SimpleTransaction};
+use crate::{SimpleStatement, SimpleTransaction};
 use chrono::NaiveDate;
 
 impl SimpleStatement {
@@ -77,11 +77,10 @@ fn balance_tag_940(tag: &str, date: NaiveDate, amount: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camt053::import_camt_from_reader;
-    use crate::simple;
+    use crate::{Document, simple};
 
     fn test_statement() -> SimpleStatement {
-        let doc = import_camt_from_reader(simple::TEST_XML.as_bytes()).expect("valid test fixture");
+        let doc = Document::from_reader(simple::TEST_XML.as_bytes()).expect("valid test fixture");
         simple::model::convert(&doc)
             .expect("valid statement")
             .remove(0)

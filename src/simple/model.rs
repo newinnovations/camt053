@@ -8,9 +8,7 @@
 //! counterparty name and description.
 
 use super::abnamro::abnamro_clean_description;
-use crate::camt053::schema::{self, Document};
-use crate::camt053::{import_camt, import_camt_from_reader};
-use crate::error::CamtError;
+use crate::{Document, camt053::schema, error::CamtError};
 use chrono::NaiveDate;
 use std::fmt::Display;
 use std::fs::File;
@@ -20,8 +18,10 @@ use std::path::Path;
 /// A single booked transaction, reduced to the fields required for most use cases.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SimpleTransaction {
-    /// IBAN of the account the transaction belongs to.
-    pub account_iban: String,
+    /// IBAN (or other identification) of the account this statement belongs to.
+    pub account: String,
+    /// Optional reference supplied by the bank for this transaction (may be empty).
+    pub reference: Option<String>,
     /// Date the transaction was booked by the bank.
     pub book_date: NaiveDate,
     /// Value date of the transaction (may differ from `book_date`).
@@ -38,17 +38,17 @@ pub struct SimpleTransaction {
 }
 
 impl SimpleTransaction {
-    fn from_entry(account_iban: &str, entry: &schema::Entry) -> Result<Self, CamtError> {
-        let description = if account_iban.contains("ABNA") {
-            let description = entry.description(account_iban)?;
+    fn from_entry(account: &str, entry: &schema::Entry) -> Result<Self, CamtError> {
+        let description = if account.contains("ABNA") {
+            let description = entry.description(account)?;
             if description.contains("/REMI/") {
                 let sepa = super::abnamro::SepaTransaction::parse(&description);
                 sepa.remittance_info.unwrap_or(description)
             } else {
-                abnamro_clean_description(&entry.description(account_iban)?)
+                abnamro_clean_description(&entry.description(account)?)
             }
         } else {
-            entry.description(account_iban)?
+            entry.description(account)?
         };
         let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
 
@@ -65,7 +65,8 @@ impl SimpleTransaction {
         // };
 
         Ok(SimpleTransaction {
-            account_iban: account_iban.to_string(),
+            account: account.to_string(),
+            reference: entry.reference.clone(),
             book_date: entry.book_date()?,
             value_date: entry.val_date()?,
             amount: entry.amount(),
@@ -121,13 +122,13 @@ impl SimpleStatement {
                 let file = archive.by_index(i)?;
                 if file.name().ends_with(".xml") {
                     let reader = BufReader::new(file);
-                    let doc = import_camt_from_reader(reader)?;
+                    let doc = Document::from_reader(reader)?;
                     statements.extend(convert(&doc)?);
                 }
             }
             merge_statements(statements)
         } else {
-            let doc = import_camt(camt_file)?;
+            let doc = Document::load(camt_file)?;
             convert(&doc)
         }
     }
@@ -395,10 +396,10 @@ pub(crate) mod fixtures {
 mod tests {
     use super::fixtures::TEST_XML;
     use super::*;
-    use crate::camt053::import_camt_from_reader;
+    use crate::Document;
 
     fn test_statement() -> SimpleStatement {
-        let doc = import_camt_from_reader(TEST_XML.as_bytes()).expect("valid test fixture");
+        let doc = Document::from_reader(TEST_XML.as_bytes()).expect("valid test fixture");
         convert(&doc).expect("valid statement").remove(0)
     }
 
@@ -442,7 +443,7 @@ mod tests {
     fn convert_extracts_debit_transaction_with_creditor_counterparty() {
         let statement = test_statement();
         let tx = &statement.transactions[0];
-        assert_eq!(tx.account_iban, "NL00SNSB0000000000");
+        assert_eq!(tx.account, "NL00SNSB0000000000");
         assert_eq!(tx.amount, -100.00);
         assert_eq!(tx.counter_iban.as_deref(), Some("NL00ABNA0000000001"));
         assert_eq!(tx.counter_name.as_deref(), Some("Some Shop B.V."));
@@ -463,7 +464,8 @@ mod tests {
     #[test]
     fn display_truncates_long_description() {
         let tx = SimpleTransaction {
-            account_iban: "NL00SNSB0000000000".to_string(),
+            account: "NL00SNSB0000000000".to_string(),
+            reference: None,
             book_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
             value_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
             amount: 12.34,

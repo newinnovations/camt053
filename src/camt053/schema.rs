@@ -815,7 +815,7 @@ pub enum EntryStatus {
 pub struct Entry {
     /// Reference assigned to the entry, if present.
     #[serde(rename = "NtryRef")]
-    pub entry_reference: Option<String>,
+    pub reference: Option<String>,
     /// Amount of the entry.
     #[serde(rename = "Amt")]
     pub amount: f64,

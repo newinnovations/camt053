@@ -29,7 +29,7 @@ As a library, add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-camt053 = "0.1"
+camt053 = "0.2.0"
 ```
 
 ## Command-line usage
@@ -49,13 +49,27 @@ use camt053::SimpleStatement;
 
 let statements = SimpleStatement::load("statement.xml")?;
 for statement in &statements {
-    println!("Account: {}", statement.iban);
+    println!("Account: {}", statement.account);
     for transaction in &statement.transactions {
         println!("{transaction}");
     }
 }
 # Ok::<(), camt053::CamtError>(())
 ```
+
+Look at the [examples](examples/) for more usage examples.
+
+## Bank support
+
+Tested with statements from the following banks:
+
+- ABN AMRO
+- Rabobank
+- SNS Bank (ASN Bank)
+- ING Bank
+
+Happy to accept contributions for other banks. Please open an issue or PR if you have a
+CAMT.053 file from a bank that is not yet supported.
 
 ## License
 
