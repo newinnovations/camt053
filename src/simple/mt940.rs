@@ -3,6 +3,7 @@
 
 use crate::{SimpleStatement, SimpleTransaction};
 use chrono::NaiveDate;
+use rust_decimal::Decimal;
 
 impl SimpleStatement {
     /// Renders this statement as a single MT940 message.
@@ -43,7 +44,7 @@ impl SimpleStatement {
 
 impl SimpleTransaction {
     fn entry_940_61(&self) -> String {
-        let amount = if self.amount < 0.0 {
+        let amount = if self.amount.is_sign_negative() {
             format!("D{:.2}", -self.amount)
         } else {
             format!("C{:.2}", self.amount)
@@ -64,9 +65,9 @@ impl SimpleTransaction {
 }
 
 /// Formats a `60F`/`62F` style balance tag: `:<tag>:<C|D><yymmdd>EUR<amount>`.
-fn balance_tag_940(tag: &str, date: NaiveDate, amount: f64) -> String {
+fn balance_tag_940(tag: &str, date: NaiveDate, amount: Decimal) -> String {
     let date = date.format("%y%m%d");
-    let res = if amount < 0.0 {
+    let res = if amount.is_sign_negative() {
         format!(":{tag}:D{date}EUR{:.2}", -amount)
     } else {
         format!(":{tag}:C{date}EUR{:.2}", amount)
@@ -78,10 +79,11 @@ fn balance_tag_940(tag: &str, date: NaiveDate, amount: f64) -> String {
 mod tests {
     use super::*;
     use crate::{Document, simple};
+    use rust_decimal_macros::dec;
 
     fn test_statement() -> SimpleStatement {
         let doc = Document::from_reader(simple::TEST_XML.as_bytes()).expect("valid test fixture");
-        simple::model::convert(&doc)
+        SimpleStatement::from_document(&doc)
             .expect("valid statement")
             .remove(0)
     }
@@ -90,11 +92,11 @@ mod tests {
     fn balance_tag_940_formats_credit_and_debit() {
         let date = NaiveDate::from_ymd_opt(2026, 1, 23).unwrap();
         assert_eq!(
-            balance_tag_940("60F", date, 203.69),
+            balance_tag_940("60F", date, dec!(203.69)),
             ":60F:C260123EUR203,69"
         );
         assert_eq!(
-            balance_tag_940("60F", date, -203.69),
+            balance_tag_940("60F", date, dec!(-203.69)),
             ":60F:D260123EUR203,69"
         );
     }

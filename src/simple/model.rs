@@ -10,10 +10,18 @@
 use super::abnamro::abnamro_clean_description;
 use crate::{Document, camt053::schema, error::CamtError};
 use chrono::NaiveDate;
+use rust_decimal::Decimal;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
+
+/// Maximum allowed discrepancy (in the statement's currency) between an
+/// opening/closing balance and the sum of transactions (or a neighbouring
+/// statement's balance) before it is treated as an inconsistency. Since
+/// amounts are exact [`Decimal`] values, this only accounts for genuine
+/// rounding quirks in source data, not floating point error.
+const BALANCE_TOLERANCE: Decimal = Decimal::from_parts(5, 0, 0, false, 3);
 
 /// A single booked transaction, reduced to the fields required for most use cases.
 #[derive(Debug, Clone, PartialEq)]
@@ -27,7 +35,7 @@ pub struct SimpleTransaction {
     /// Value date of the transaction (may differ from `book_date`).
     pub value_date: NaiveDate,
     /// Signed amount: negative for debit, positive for credit.
-    pub amount: f64,
+    pub amount: Decimal,
     /// IBAN of the counterparty account, if known.
     pub counter_iban: Option<String>,
     /// Name of the counterparty, if known.
@@ -97,14 +105,16 @@ impl Display for SimpleTransaction {
 pub struct SimpleStatement {
     /// IBAN (or other identification) of the account this statement belongs to.
     pub account: String,
+    /// Currency of the statement
+    pub currency: Option<String>,
     /// Date of the opening balance.
     pub opening_date: NaiveDate,
     /// Opening balance, signed (negative when the account is overdrawn).
-    pub opening_amount: f64,
+    pub opening_amount: Decimal,
     /// Date of the closing balance.
     pub closing_date: NaiveDate,
     /// Closing balance, signed (negative when the account is overdrawn).
-    pub closing_amount: f64,
+    pub closing_amount: Decimal,
     /// Transactions booked between the opening and closing balance.
     pub transactions: Vec<SimpleTransaction>,
 }
@@ -123,13 +133,13 @@ impl SimpleStatement {
                 if file.name().ends_with(".xml") {
                     let reader = BufReader::new(file);
                     let doc = Document::from_reader(reader)?;
-                    statements.extend(convert(&doc)?);
+                    statements.extend(Self::from_document(&doc)?);
                 }
             }
             merge_statements(statements)
         } else {
             let doc = Document::load(camt_file)?;
-            convert(&doc)
+            Self::from_document(&doc)
         }
     }
 
@@ -167,9 +177,9 @@ impl SimpleStatement {
 
         // Check that the opening and closing balances match the transactions, otherwise
         // the statement is inconsistent and we should not silently ignore it.
-        let transaction_sum: f64 = transactions.iter().map(|t| t.amount).sum();
+        let transaction_sum: Decimal = transactions.iter().map(|t| t.amount).sum();
         let expected_closing_amount = opening.amount() + transaction_sum;
-        if (expected_closing_amount - closing.amount()).abs() > 0.005 {
+        if (expected_closing_amount - closing.amount()).abs() > BALANCE_TOLERANCE {
             return Err(CamtError::InconsistentStatement {
                 account: account.clone(),
                 opening_date,
@@ -182,6 +192,7 @@ impl SimpleStatement {
 
         Ok(SimpleStatement {
             account,
+            currency: statement.account.currency.clone(),
             opening_date,
             opening_amount: opening.amount(),
             closing_date,
@@ -189,14 +200,11 @@ impl SimpleStatement {
             transactions,
         })
     }
-}
 
-/// Converts a full camt.053 [`Document`] into a list of [`SimpleStatement`]s.
-pub fn convert(doc: &Document) -> Result<Vec<SimpleStatement>, CamtError> {
-    doc.statements()
-        .iter()
-        .map(SimpleStatement::from_statement)
-        .collect()
+    /// Converts a full camt.053 [`Document`] into a list of [`SimpleStatement`]s.
+    pub fn from_document(doc: &Document) -> Result<Vec<SimpleStatement>, CamtError> {
+        doc.statements().iter().map(Self::from_statement).collect()
+    }
 }
 
 /// Merges the (typically daily) statements of a zipped camt.053 export into a
@@ -239,7 +247,7 @@ fn merge_statements(statements: Vec<SimpleStatement>) -> Result<Vec<SimpleStatem
                         next_opening: next.opening_date,
                     });
                 }
-                if (prev.closing_amount - next.opening_amount).abs() > 0.005 {
+                if (prev.closing_amount - next.opening_amount).abs() > BALANCE_TOLERANCE {
                     return Err(CamtError::BalanceGap {
                         account: account.clone(),
                         prev_closing_date: prev.closing_date,
@@ -248,7 +256,18 @@ fn merge_statements(statements: Vec<SimpleStatement>) -> Result<Vec<SimpleStatem
                         next_opening_amount: next.opening_amount,
                     });
                 }
+                // Check currency consistency across statements for the same account. This is a sanity check, as
+                // the camt.053 schema requires all statements for the same account to have the same currency.
+                if prev.currency != next.currency {
+                    return Err(CamtError::CurrencyMismatch {
+                        account: account.clone(),
+                        prev_currency: prev.currency.clone(),
+                        next_currency: next.currency.clone(),
+                    });
+                }
             }
+
+            let currency = group[0].currency.clone();
 
             let opening_date = group.first().expect("group is never empty").opening_date;
             let opening_amount = group.first().expect("group is never empty").opening_amount;
@@ -263,6 +282,7 @@ fn merge_statements(statements: Vec<SimpleStatement>) -> Result<Vec<SimpleStatem
 
             Ok(SimpleStatement {
                 account,
+                currency,
                 opening_date,
                 opening_amount,
                 closing_date,
@@ -397,10 +417,13 @@ mod tests {
     use super::fixtures::TEST_XML;
     use super::*;
     use crate::Document;
+    use rust_decimal_macros::dec;
 
     fn test_statement() -> SimpleStatement {
         let doc = Document::from_reader(TEST_XML.as_bytes()).expect("valid test fixture");
-        convert(&doc).expect("valid statement").remove(0)
+        SimpleStatement::from_document(&doc)
+            .expect("valid statement")
+            .remove(0)
     }
 
     #[test]
@@ -430,12 +453,12 @@ mod tests {
             statement.opening_date,
             NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
         );
-        assert_eq!(statement.opening_amount, 1000.00);
+        assert_eq!(statement.opening_amount, dec!(1000.00));
         assert_eq!(
             statement.closing_date,
             NaiveDate::from_ymd_opt(2026, 7, 21).unwrap()
         );
-        assert_eq!(statement.closing_amount, 950.00);
+        assert_eq!(statement.closing_amount, dec!(950.00));
         assert_eq!(statement.transactions.len(), 2);
     }
 
@@ -444,7 +467,7 @@ mod tests {
         let statement = test_statement();
         let tx = &statement.transactions[0];
         assert_eq!(tx.account, "NL00SNSB0000000000");
-        assert_eq!(tx.amount, -100.00);
+        assert_eq!(tx.amount, dec!(-100.00));
         assert_eq!(tx.counter_iban.as_deref(), Some("NL00ABNA0000000001"));
         assert_eq!(tx.counter_name.as_deref(), Some("Some Shop B.V."));
         assert_eq!(tx.description, "Payment for invoice 123");
@@ -454,7 +477,7 @@ mod tests {
     fn convert_extracts_credit_transaction_with_debtor_counterparty() {
         let statement = test_statement();
         let tx = &statement.transactions[1];
-        assert_eq!(tx.amount, 50.00);
+        assert_eq!(tx.amount, dec!(50.00));
         assert_eq!(tx.counter_iban, None);
         assert_eq!(tx.counter_name.as_deref(), Some("John Doe"));
         // No <RmtInf><Ustrd> present, but <AddtlNtryInf> is used instead.
@@ -468,7 +491,7 @@ mod tests {
             reference: None,
             book_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
             value_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
-            amount: 12.34,
+            amount: dec!(12.34),
             counter_iban: Some("NL00ABNA0000000001".to_string()),
             counter_name: Some("Some Shop B.V.".to_string()),
             description: "x".repeat(300),
@@ -481,12 +504,13 @@ mod tests {
     fn statement(
         iban: &str,
         opening_date: &str,
-        opening_amount: f64,
+        opening_amount: Decimal,
         closing_date: &str,
-        closing_amount: f64,
+        closing_amount: Decimal,
     ) -> SimpleStatement {
         SimpleStatement {
             account: iban.to_string(),
+            currency: Some("EUR".to_string()),
             opening_date: NaiveDate::parse_from_str(opening_date, "%Y-%m-%d").unwrap(),
             opening_amount,
             closing_date: NaiveDate::parse_from_str(closing_date, "%Y-%m-%d").unwrap(),
@@ -500,16 +524,16 @@ mod tests {
         let s1 = statement(
             "NL00SNSB0000000000",
             "2026-01-02",
-            100.0,
+            dec!(100.0),
             "2026-01-02",
-            150.0,
+            dec!(150.0),
         );
         let s2 = statement(
             "NL00SNSB0000000000",
             "2026-01-01",
-            50.0,
+            dec!(50.0),
             "2026-01-01",
-            100.0,
+            dec!(100.0),
         );
         let merged = merge_statements(vec![s1, s2]).expect("no overlap or balance gap");
 
@@ -517,28 +541,46 @@ mod tests {
         let m = &merged[0];
         assert_eq!(m.account, "NL00SNSB0000000000");
         assert_eq!(m.opening_date, NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
-        assert_eq!(m.opening_amount, 50.0);
+        assert_eq!(m.opening_amount, dec!(50.0));
         assert_eq!(m.closing_date, NaiveDate::from_ymd_opt(2026, 1, 2).unwrap());
-        assert_eq!(m.closing_amount, 150.0);
+        assert_eq!(m.closing_amount, dec!(150.0));
     }
 
     #[test]
     fn merge_statements_keeps_accounts_separate() {
-        let a = statement("NL00SNSB0000000001", "2026-01-01", 0.0, "2026-01-01", 10.0);
-        let b = statement("NL00SNSB0000000002", "2026-01-01", 0.0, "2026-01-01", 20.0);
+        let a = statement(
+            "NL00SNSB0000000001",
+            "2026-01-01",
+            dec!(0.0),
+            "2026-01-01",
+            dec!(10.0),
+        );
+        let b = statement(
+            "NL00SNSB0000000002",
+            "2026-01-01",
+            dec!(0.0),
+            "2026-01-01",
+            dec!(20.0),
+        );
         let merged = merge_statements(vec![a, b]).expect("no overlap or balance gap");
         assert_eq!(merged.len(), 2);
     }
 
     #[test]
     fn merge_statements_errors_on_balance_gap() {
-        let s1 = statement("NL00SNSB0000000000", "2026-01-01", 0.0, "2026-01-01", 100.0);
+        let s1 = statement(
+            "NL00SNSB0000000000",
+            "2026-01-01",
+            dec!(0.0),
+            "2026-01-01",
+            dec!(100.0),
+        );
         let s2 = statement(
             "NL00SNSB0000000000",
             "2026-01-02",
-            999.0,
+            dec!(999.0),
             "2026-01-02",
-            150.0,
+            dec!(150.0),
         );
         let err = merge_statements(vec![s1, s2]).unwrap_err();
         assert!(matches!(err, CamtError::BalanceGap { .. }));
@@ -547,13 +589,19 @@ mod tests {
 
     #[test]
     fn merge_statements_errors_on_overlap() {
-        let s1 = statement("NL00SNSB0000000000", "2026-01-01", 0.0, "2026-01-05", 100.0);
+        let s1 = statement(
+            "NL00SNSB0000000000",
+            "2026-01-01",
+            dec!(0.0),
+            "2026-01-05",
+            dec!(100.0),
+        );
         let s2 = statement(
             "NL00SNSB0000000000",
             "2026-01-03",
-            100.0,
+            dec!(100.0),
             "2026-01-06",
-            150.0,
+            dec!(150.0),
         );
         let err = merge_statements(vec![s1, s2]).unwrap_err();
         assert!(matches!(err, CamtError::OverlappingStatements { .. }));

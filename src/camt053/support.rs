@@ -2,6 +2,7 @@ use super::schema::{self, Balance, BalanceTypeCode, Document, Entry, Statement};
 use crate::error::CamtError;
 use chrono::NaiveDate;
 use quick_xml::de::from_reader;
+use rust_decimal::Decimal;
 use std::{
     fs::File,
     io::{BufRead, BufReader, Read},
@@ -108,7 +109,7 @@ impl Balance {
 
     /// Signed balance amount: negative when `CdtDbtInd` is `DBIT`, positive
     /// when it is `CRDT`.
-    pub fn amount(&self) -> f64 {
+    pub fn amount(&self) -> Decimal {
         match self.credit_debit_indicator {
             schema::CreditDebitIndicator::DBIT => -self.amount,
             schema::CreditDebitIndicator::CRDT => self.amount,
@@ -124,7 +125,7 @@ impl Balance {
 impl Entry {
     /// Signed transaction amount: negative when `CdtDbtInd` is `DBIT`,
     /// positive when it is `CRDT`.
-    pub fn amount(&self) -> f64 {
+    pub fn amount(&self) -> Decimal {
         match self.credit_debit_indicator {
             schema::CreditDebitIndicator::DBIT => -self.amount,
             schema::CreditDebitIndicator::CRDT => self.amount,
@@ -217,6 +218,7 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     fn import(balances_xml: &str) -> Document {
         let xml = format!(
@@ -267,7 +269,7 @@ mod tests {
             balance.date().unwrap(),
             NaiveDate::from_ymd_opt(2026, 1, 2).unwrap()
         );
-        assert_eq!(balance.amount(), 1000.00);
+        assert_eq!(balance.amount(), dec!(1000.00));
     }
 
     #[test]
@@ -290,7 +292,7 @@ mod tests {
             balance.date().unwrap(),
             NaiveDate::from_ymd_opt(2026, 1, 2).unwrap()
         );
-        assert_eq!(balance.amount(), 900.00);
+        assert_eq!(balance.amount(), dec!(900.00));
     }
 
     #[test]

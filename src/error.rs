@@ -6,6 +6,7 @@
 //! decide how to report failures.
 
 use chrono::NaiveDate;
+use rust_decimal::Decimal;
 
 /// The single error type returned by all fallible operations in this crate.
 #[derive(Debug, thiserror::Error)]
@@ -91,11 +92,26 @@ pub enum CamtError {
         /// Closing date of the earlier statement.
         prev_closing_date: NaiveDate,
         /// Closing balance of the earlier statement.
-        prev_closing_amount: f64,
+        prev_closing_amount: Decimal,
         /// Opening date of the later statement.
         next_opening_date: NaiveDate,
         /// Opening balance of the later statement.
-        next_opening_amount: f64,
+        next_opening_amount: Decimal,
+    },
+
+    /// Two consecutive statements for the same account, being merged from a
+    /// `.zip` archive, have different currencies.
+    #[error(
+        "Currency mismatch in camt.053 statements for account {account}: previous statement has currency {prev_currency:?} \
+         but next statement has currency {next_currency:?}"
+    )]
+    CurrencyMismatch {
+        /// IBAN (or other identification) of the affected account.
+        account: String,
+        /// Currency of the previous statement.
+        prev_currency: Option<String>,
+        /// Currency of the next statement.
+        next_currency: Option<String>,
     },
 
     /// A statement's opening balance, closing balance and the sum of its
@@ -110,12 +126,12 @@ pub enum CamtError {
         /// Opening date of the statement.
         opening_date: NaiveDate,
         /// Opening balance of the statement.
-        opening_amount: f64,
+        opening_amount: Decimal,
         /// Closing date of the statement.
         closing_date: NaiveDate,
         /// Closing balance of the statement.
-        closing_amount: f64,
+        closing_amount: Decimal,
         /// Sum of all transaction amounts in the statement.
-        transaction_sum: f64,
+        transaction_sum: Decimal,
     },
 }

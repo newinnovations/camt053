@@ -30,7 +30,7 @@ As a library, add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-camt053 = "0.2.0"
+camt053 = "0.3"
 ```
 
 ## Command-line usage

@@ -8,16 +8,20 @@ fn main() {
     let statements = SimpleStatement::load(&camt_file).expect("Failed to load CAMT.053 file");
 
     statements.into_iter().for_each(|statement| {
-        println!("Account: {}", statement.account);
+        println!("            account: {}", statement.account);
         println!(
-            "Opening balance: {:>10.2} on {}",
+            "           currency: {}",
+            statement.currency.as_deref().unwrap_or("-")
+        );
+        println!(
+            "    opening balance: {:>10.2} on {}",
             statement.opening_amount, statement.opening_date
         );
         println!(
-            "Closing balance: {:>10.2} on {}",
+            "    closing balance: {:>10.2} on {}",
             statement.closing_amount, statement.closing_date
         );
-        println!("Transactions:");
+        println!();
         for transaction in &statement.transactions {
             println!(
                 "          reference: {}",

@@ -17,6 +17,7 @@
 
 use crate::error::CamtError;
 use chrono::NaiveDate;
+use rust_decimal::Decimal;
 use serde::Deserialize;
 
 mod date_format {
@@ -616,10 +617,10 @@ pub struct TotalEntries {
     pub number_of_entries: Option<u32>,
     /// Summed amount for this total entries, if present.
     #[serde(rename = "Sum")]
-    pub sum: Option<f64>,
+    pub sum: Option<Decimal>,
     /// Net amount for this total entries, if present.
     #[serde(rename = "TtlNetNtryAmt")]
-    pub total_net_entry_amount: Option<f64>,
+    pub total_net_entry_amount: Option<Decimal>,
     /// Whether this total entries is credit or debit, if present.
     #[serde(rename = "CdtDbtInd")]
     pub credit_debit_indicator: Option<CreditDebitIndicator>,
@@ -634,7 +635,7 @@ pub struct NumberAndSumOfTransactions {
     pub number_of_entries: Option<u32>,
     /// Summed amount for this number and sum of transactions, if present.
     #[serde(rename = "Sum")]
-    pub sum: Option<f64>,
+    pub sum: Option<Decimal>,
 }
 
 /// `TtlNtriesPerBkTxCd` - Totals per Bank Transaction Code.
@@ -646,10 +647,10 @@ pub struct TotalsPerBankTransactionCode {
     pub number_of_entries: Option<u32>,
     /// Summed amount for this totals per bank transaction code, if present.
     #[serde(rename = "Sum")]
-    pub sum: Option<f64>,
+    pub sum: Option<Decimal>,
     /// Net amount for this totals per bank transaction code, if present.
     #[serde(rename = "TtlNetNtryAmt")]
-    pub total_net_entry_amount: Option<f64>,
+    pub total_net_entry_amount: Option<Decimal>,
     /// Whether this totals per bank transaction code is credit or debit, if present.
     #[serde(rename = "CdtDbtInd")]
     pub credit_debit_indicator: Option<CreditDebitIndicator>,
@@ -676,7 +677,7 @@ pub struct Balance {
     pub credit_line: Option<CreditLine>,
     /// Amount of the balance.
     #[serde(rename = "Amt")]
-    pub amount: f64,
+    pub amount: Decimal,
     /// Whether the balance is credit or debit.
     #[serde(rename = "CdtDbtInd")]
     pub credit_debit_indicator: CreditDebitIndicator,
@@ -694,7 +695,7 @@ pub struct CreditLine {
     pub included: bool,
     /// Amount of the credit line, if present.
     #[serde(rename = "Amt")]
-    pub amount: Option<f64>,
+    pub amount: Option<Decimal>,
 }
 
 /// `Tp` - Balance Type.
@@ -818,7 +819,7 @@ pub struct Entry {
     pub reference: Option<String>,
     /// Amount of the entry.
     #[serde(rename = "Amt")]
-    pub amount: f64,
+    pub amount: Decimal,
     /// Whether the entry is credit or debit.
     #[serde(rename = "CdtDbtInd")]
     pub credit_debit_indicator: CreditDebitIndicator,
@@ -923,7 +924,7 @@ pub struct CashBalanceAvailability {
     pub date: CashBalanceAvailabilityDate,
     /// Amount for this cash balance availability.
     #[serde(rename = "Amt")]
-    pub amount: f64,
+    pub amount: Decimal,
     /// Whether this cash balance availability is credit or debit.
     #[serde(rename = "CdtDbtInd")]
     pub credit_debit_indicator: CreditDebitIndicator,
@@ -968,7 +969,7 @@ pub struct BatchInformation {
     pub number_of_transactions: Option<String>,
     /// Total amount of the batch, if present.
     #[serde(rename = "TtlAmt")]
-    pub total_amount: Option<f64>,
+    pub total_amount: Option<Decimal>,
     /// Whether this batch information is credit or debit, if present.
     #[serde(rename = "CdtDbtInd")]
     pub credit_debit_indicator: Option<CreditDebitIndicator>,
@@ -985,7 +986,7 @@ pub struct CurrencyAndAmount {
     // The '$value' identifier captures the inner text content of the tag
     /// Numeric value of the amount.
     #[serde(rename = "$value")]
-    pub value: f64,
+    pub value: Decimal,
 }
 
 /// `Amount` - Instructed Amount or Transaction Amount.
@@ -1363,22 +1364,22 @@ pub struct ReferredDocumentTypeChoice {
 pub struct RemittanceAmount {
     /// Amount that remains due and payable, if present.
     #[serde(rename = "DuePyblAmt")]
-    pub due_payable_amount: Option<f64>,
+    pub due_payable_amount: Option<Decimal>,
     /// Discount amount applied, if present.
     #[serde(rename = "DscntApldAmt")]
-    pub discount_applied_amount: Option<f64>,
+    pub discount_applied_amount: Option<Decimal>,
     /// Credit note amount, if present.
     #[serde(rename = "CdtNoteAmt")]
-    pub credit_note_amount: Option<f64>,
+    pub credit_note_amount: Option<Decimal>,
     /// Tax amount, if present.
     #[serde(rename = "TaxAmt")]
-    pub tax_amount: Option<f64>,
+    pub tax_amount: Option<Decimal>,
     /// Adjustment amounts and their reasons.
     #[serde(rename = "AdjstmntAmtAndRsn", default)]
     pub adjustment_amount_and_reason: Vec<DocumentAdjustment>,
     /// Amount actually remitted, if present.
     #[serde(rename = "RmtdAmt")]
-    pub remitted_amount: Option<f64>,
+    pub remitted_amount: Option<Decimal>,
 }
 
 /// `AdjstmntAmtAndRsn` - Document Adjustment.
@@ -1387,7 +1388,7 @@ pub struct RemittanceAmount {
 pub struct DocumentAdjustment {
     /// Amount for this document adjustment.
     #[serde(rename = "Amt")]
-    pub amount: f64,
+    pub amount: Decimal,
     /// Whether this document adjustment is credit or debit, if present.
     #[serde(rename = "CdtDbtInd")]
     pub credit_debit_indicator: Option<CreditDebitIndicator>,
