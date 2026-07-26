@@ -13,7 +13,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use std::fmt::Display;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 
 /// Maximum allowed discrepancy (in the statement's currency) between an
@@ -122,11 +122,26 @@ pub struct SimpleStatement {
 impl SimpleStatement {
     /// Parses the given camt.053 file (plain `.xml` or `.zip` containing several `.xml` files)
     /// and reduces it to the simplified, format agnostic statement structs.
+    ///
+    /// The format is detected from the file's contents (see [`Self::from_reader`]),
+    /// not from the file extension.
     pub fn load<T: AsRef<Path>>(camt_file: T) -> Result<Vec<SimpleStatement>, CamtError> {
-        let camt_file = camt_file.as_ref();
-        if camt_file.extension().is_some_and(|ext| ext == "zip") {
-            let zip_file = File::open(camt_file)?;
-            let mut archive = zip::ZipArchive::new(zip_file)?;
+        let file = File::open(camt_file)?;
+        Self::from_reader(BufReader::new(file))
+    }
+
+    /// Parses camt.053 data from any reader, transparently handling both a
+    /// plain XML document and a `.zip` archive containing several `.xml`
+    /// files. The format is detected from the data itself (a leading `PK`
+    /// signature indicates a zip archive), so callers don't need to know
+    /// the source's format in advance (e.g. an upload without a reliable
+    /// filename/extension).
+    pub fn from_reader<R: Read>(mut reader: R) -> Result<Vec<SimpleStatement>, CamtError> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data)?;
+
+        if data.starts_with(b"PK") {
+            let mut archive = zip::ZipArchive::new(Cursor::new(data))?;
             let mut statements = Vec::new();
             for i in 0..archive.len() {
                 let file = archive.by_index(i)?;
@@ -138,7 +153,7 @@ impl SimpleStatement {
             }
             merge_statements(statements)
         } else {
-            let doc = Document::load(camt_file)?;
+            let doc = Document::from_reader(data.as_slice())?;
             Self::from_document(&doc)
         }
     }
