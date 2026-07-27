@@ -13,6 +13,10 @@ pub struct Args {
     #[arg(short, long, default_value_t = false, value_name = "SUMMARY")]
     transactions: bool,
 
+    /// Show reference for each transaction (if available)
+    #[arg(short, long, default_value_t = false, value_name = "REFERENCE")]
+    r#ref: bool,
+
     /// Export to MT940 format instead of printing the transactions
     #[arg(short, long, default_value_t = false, value_name = "MT940")]
     mt940: bool,
@@ -47,9 +51,20 @@ fn run(args: &Args) -> Result<(), CamtError> {
                 statement.closing_amount, statement.closing_date
             );
             if args.transactions {
-                println!("Transactions:");
-                for transaction in &statement.transactions {
-                    println!("{transaction}");
+                if statement.transactions.is_empty() {
+                    println!("No transactions");
+                } else {
+                    println!("Transactions:");
+                    for transaction in &statement.transactions {
+                        println!("{transaction}");
+                        if args.r#ref {
+                            if let Some(reference) = &transaction.reference {
+                                println!("{:23}[{reference}]", "");
+                            } else {
+                                println!("{:23}No reference", "");
+                            }
+                        }
+                    }
                 }
             }
             println!();

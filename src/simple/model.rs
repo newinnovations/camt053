@@ -140,7 +140,7 @@ impl SimpleStatement {
         let mut data = Vec::new();
         reader.read_to_end(&mut data)?;
 
-        if data.starts_with(b"PK") {
+        let statements = if data.starts_with(b"PK") {
             let mut archive = zip::ZipArchive::new(Cursor::new(data))?;
             let mut statements = Vec::new();
             for i in 0..archive.len() {
@@ -151,11 +151,12 @@ impl SimpleStatement {
                     statements.extend(Self::from_document(&doc)?);
                 }
             }
-            merge_statements(statements)
+            statements
         } else {
             let doc = Document::from_reader(data.as_slice())?;
-            Self::from_document(&doc)
-        }
+            Self::from_document(&doc)?
+        };
+        merge_statements(statements)
     }
 
     /// Builds a [`SimpleStatement`] from a raw `schema::Statement`,
