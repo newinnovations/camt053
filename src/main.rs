@@ -9,6 +9,10 @@ pub struct Args {
     #[arg(value_name = "FILE OR DIRECTORY", value_hint = clap::ValueHint::FilePath)]
     filename: String,
 
+    /// Show transactions
+    #[arg(short, long, default_value_t = false, value_name = "SUMMARY")]
+    transactions: bool,
+
     /// Export to MT940 format instead of printing the transactions
     #[arg(short, long, default_value_t = false, value_name = "MT940")]
     mt940: bool,
@@ -25,8 +29,15 @@ fn run(args: &Args) -> Result<(), CamtError> {
             println!("Wrote {filename}");
         }
     } else {
+        println!();
+        println!("CAMT.053 file {}", args.filename);
+        println!();
         for statement in &statements {
-            println!("Account: {}", statement.account);
+            if let Some(currency) = &statement.currency {
+                println!("Account: {} ({currency})", statement.account);
+            } else {
+                println!("Account: {}", statement.account);
+            }
             println!(
                 "Opening balance: {:>10.2} on {}",
                 statement.opening_amount, statement.opening_date
@@ -35,9 +46,11 @@ fn run(args: &Args) -> Result<(), CamtError> {
                 "Closing balance: {:>10.2} on {}",
                 statement.closing_amount, statement.closing_date
             );
-            println!("Transactions:");
-            for transaction in &statement.transactions {
-                println!("{transaction}");
+            if args.transactions {
+                println!("Transactions:");
+                for transaction in &statement.transactions {
+                    println!("{transaction}");
+                }
             }
             println!();
         }

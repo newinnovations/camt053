@@ -45,8 +45,11 @@ camt053 = { version = "0.3", default-features = false }
 ## Command-line usage
 
 ```sh
-# Print the transactions in a CAMT.053 file (or a .zip containing many CAMT.053 files)
+# Print summary of a CAMT.053 file (or a .zip containing many CAMT.053 files)
 camt053 statement.xml
+
+# Print the transactions
+camt053 --transactions statement.xml
 
 # Convert to MT940 instead of printing
 camt053 --mt940 statement.xml

@@ -92,8 +92,8 @@ impl Display for SimpleTransaction {
             "{} {:>10.2}  {:<22} {:<50}\n{:23}{}",
             self.book_date,
             self.amount,
-            self.counter_iban.as_deref().unwrap_or(""),
-            ellipsis_middle(self.counter_name.as_deref().unwrap_or(""), 50),
+            self.counter_iban.as_deref().unwrap_or("(no IBAN)"),
+            ellipsis_middle(self.counter_name.as_deref().unwrap_or("(no name)"), 50),
             "",
             ellipsis_end(&self.description, 80),
         )
