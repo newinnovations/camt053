@@ -23,6 +23,24 @@ pub enum CamtError {
     #[error("Failed to parse camt.053 XML: {0}")]
     Xml(#[from] quick_xml::DeError),
 
+    /// The input could not be parsed as valid camt.053 XML, with the byte
+    /// offset (and a snippet of the surrounding input) where parsing failed.
+    #[error(
+        "Failed to parse camt.053 XML at line {line}, column {column} (byte {position}): {source}\n... {snippet} ..."
+    )]
+    XmlAt {
+        /// The underlying deserialization error.
+        source: quick_xml::DeError,
+        /// Byte offset into the input where the error was detected.
+        position: u64,
+        /// 1-based line number where the error was detected.
+        line: usize,
+        /// 1-based column number (in bytes) within that line.
+        column: usize,
+        /// A short snippet of the input surrounding `position`, for context.
+        snippet: String,
+    },
+
     /// A statement's `<Acct><Id>` has neither an `<IBAN>` nor an `<Othr>`
     /// identification.
     #[error("Statement has no account identification (neither IBAN nor Othr)")]

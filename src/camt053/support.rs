@@ -1,13 +1,10 @@
 use super::schema::{self, Balance, BalanceTypeCode, Document, Entry, Statement};
 use crate::error::CamtError;
 use chrono::NaiveDate;
-use quick_xml::de::from_reader;
+use quick_xml::de::Deserializer;
 use rust_decimal::Decimal;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader, Read},
-    path::Path,
-};
+use serde::Deserialize;
+use std::{fs::File, io::Read, path::Path};
 
 impl Document {
     /// Parses a camt.053 XML file at `source` into the full `Document`.
@@ -16,16 +13,87 @@ impl Document {
     /// prefer [`crate::SimpleStatement::load`] instead.
     pub fn load(source: impl AsRef<Path>) -> Result<Self, CamtError> {
         let file = File::open(source)?;
-        let reader = BufReader::new(file);
-        Self::from_reader(reader)
+        Self::from_reader(file)
     }
 
     /// Parses a camt.053 XML document from any buffered reader (e.g. a `.zip`
     /// entry or an in-memory buffer) into the full `Document`.
-    pub fn from_reader<R: BufRead + Read>(reader: R) -> Result<Self, CamtError> {
-        let doc = from_reader(reader)?;
-        Ok(doc)
+    ///
+    /// On failure, the returned error includes the byte offset and a snippet
+    /// of the input surrounding the point where parsing failed.
+    pub fn from_reader<R: Read>(mut reader: R) -> Result<Self, CamtError> {
+        // Buffer the whole input so that, on error, we can report a snippet
+        // of the surrounding bytes alongside the failure position.
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf)?;
+
+        let mut deserializer = Deserializer::from_reader(buf.as_slice());
+        match Document::deserialize(&mut deserializer) {
+            Ok(doc) => Ok(doc),
+            Err(source) => {
+                let ns_reader = deserializer.get_ref().get_ref();
+                // `error_position()` is only set for low-level XML syntax
+                // errors; structural/serde errors (e.g. an unexpected tag)
+                // leave it at 0, so fall back to `buffer_position()` (the
+                // position just after the last event that was read).
+                let position = match ns_reader.error_position() {
+                    0 => ns_reader.buffer_position(),
+                    pos => pos,
+                };
+                let snippet = error_snippet(&buf, position);
+                let (line, column) = line_and_column(&buf, position);
+                Err(CamtError::XmlAt {
+                    source,
+                    position,
+                    line,
+                    column,
+                    snippet,
+                })
+            }
+        }
     }
+}
+
+/// Computes the 1-based (line, column) for byte offset `pos` within `data`,
+/// counting newlines. `column` is measured in bytes from the start of the
+/// line.
+fn line_and_column(data: &[u8], pos: u64) -> (usize, usize) {
+    let pos = (pos as usize).min(data.len());
+    let mut line = 1;
+    let mut last_newline = None;
+    for (i, &b) in data[..pos].iter().enumerate() {
+        if b == b'\n' {
+            line += 1;
+            last_newline = Some(i);
+        }
+    }
+    let column = match last_newline {
+        Some(nl) => pos - nl,
+        None => pos + 1,
+    };
+    (line, column)
+}
+
+/// Extracts a human-readable snippet of `data` around byte offset `pos`,
+/// clamped to valid UTF-8 boundaries.
+fn error_snippet(data: &[u8], pos: u64) -> String {
+    const CONTEXT: usize = 40;
+    let pos = pos as usize;
+    let start = pos.saturating_sub(CONTEXT).min(data.len());
+    let end = pos.saturating_add(CONTEXT).min(data.len());
+
+    // Nudge the window to the nearest UTF-8 char boundaries so the lossy
+    // conversion below doesn't split a multi-byte character.
+    let is_boundary = |i: usize| i == 0 || i == data.len() || (data[i] & 0xC0) != 0x80;
+    let start = (start..=pos.min(data.len()))
+        .find(|&i| is_boundary(i))
+        .unwrap_or(start);
+    let end = (end..=data.len()).find(|&i| is_boundary(i)).unwrap_or(end);
+
+    String::from_utf8_lossy(&data[start..end])
+        .replace(['\r', '\n'], " ")
+        .trim()
+        .to_string()
 }
 
 impl Statement {
@@ -243,6 +311,51 @@ mod tests {
 </Document>"#
         );
         Document::from_reader(xml.as_bytes()).expect("valid test fixture")
+    }
+
+    #[test]
+    fn from_reader_reports_position_and_snippet_on_malformed_xml() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Document>
+  <BkToCstmrStmt>
+    <GrpHdr>
+      <MsgId>MSG-1</MsgId>
+      <CreDtTm>2026-07-22T17:25:22.324+02:00</CreDtTm>
+    </GrpHdr>
+    <Stmt>
+      <Id>0000000000</Id>
+      <CreDtTm>2026-07-22T17:25:22.324+02:00
+      <Acct>
+        <Id>
+          <IBAN>NL00SNSB0000000000</IBAN>
+        </Id>
+      </Acct>
+    </Stmt>
+  </BkToCstmrStmt>
+</Document>"#;
+
+        let err = Document::from_reader(xml.as_bytes()).expect_err("malformed XML must fail");
+        match err {
+            CamtError::XmlAt {
+                position,
+                line,
+                column,
+                snippet,
+                ..
+            } => {
+                assert!(position > 0, "expected a non-zero error position");
+                assert!(
+                    line > 1,
+                    "expected a line number past the first line, got {line}"
+                );
+                assert!(column > 0, "expected a non-zero column, got {column}");
+                assert!(
+                    snippet.contains("CreDtTm") || snippet.contains("Acct"),
+                    "snippet should contain context around the error, got: {snippet:?}"
+                );
+            }
+            other => panic!("expected CamtError::XmlAt, got: {other:?}"),
+        }
     }
 
     #[test]
