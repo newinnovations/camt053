@@ -11,10 +11,10 @@
 //! # Example
 //!
 //! ```no_run
-//! use camt053::SimpleStatement;
+//! use camt053::SimpleStatements;
 //!
-//! let statements = SimpleStatement::load("statement.xml")?;
-//! for statement in &statements {
+//! let statements = SimpleStatements::load("statement.xml")?;
+//! for statement in &statements.statements {
 //!     println!("Account: {}", statement.account);
 //!     for transaction in &statement.transactions {
 //!         println!("{transaction}");
@@ -43,4 +43,4 @@ mod simple;
 
 pub use camt053::schema::{self, Document};
 pub use error::CamtError;
-pub use simple::{SimpleStatement, SimpleTransaction};
+pub use simple::{SimpleStatement, SimpleStatements, SimpleTransaction};

@@ -1,11 +1,11 @@
-use camt053::SimpleStatement;
+use camt053::SimpleStatements;
 
 fn main() {
     let camt_file = std::env::args()
         .nth(1)
         .expect("Please provide a CAMT.053 file as an argument");
 
-    let statements = SimpleStatement::load(&camt_file).expect("Failed to load CAMT.053 file");
+    let statements = SimpleStatements::load(&camt_file).expect("Failed to load CAMT.053 file");
 
     statements.into_iter().for_each(|statement| {
         println!("            account: {}", statement.account);
@@ -38,6 +38,10 @@ fn main() {
                 transaction.counter_name.as_deref().unwrap_or("-")
             );
             println!("        description: {}", transaction.description);
+            let clean_desc = transaction.clean_description();
+            if clean_desc != transaction.description {
+                println!("  clean description: {}", clean_desc);
+            }
             println!();
         }
         println!();

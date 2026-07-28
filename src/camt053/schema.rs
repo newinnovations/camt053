@@ -1,6 +1,7 @@
-//! Rust representation of the ISO 20022 `camt.053.001.02` (Bank-to-Customer
-//! Statement) message, as defined by `camt.053.001.02.xsd` in `/doc`
-//! and constrained by the Dutch Banking Association (DPA) Implementation
+//! Rust representation of the ISO 20022 Bank-to-Customer Statement message,
+//! supporting both `camt.053.001.02` (`camt.053.001.02.xsd` in `/doc`) and
+//! the newer `camt.053.001.08` (`camt.053.001.08.xsd` in `/doc`), and
+//! constrained by the Dutch Banking Association (DPA) Implementation
 //! Guidelines for this message (used by ABN/SNS/ING and other NL banks).
 //!
 //! Struct/enum and field names use full, human-readable words rather than
@@ -12,13 +13,32 @@
 //!
 //! A number of elements that only apply to securities/investment-fund
 //! statements (e.g. `Tax`, `CorpActn`, `SfkpgAcct`, `RtrInf`, `RltdPric`,
-//! `RltdQties`, `FinInstrmId`) are out of scope for a retail cash account
-//! statement and are not modelled here.
+//! `RltdQties`, `FinInstrmId`) or to card payments (e.g. `CardTx`, `Chrgs`,
+//! `Intrst` on a transaction) are out of scope for a retail cash account
+//! statement and are not modelled here, in either schema version.
+//!
+//! ## Supporting two schema versions
+//!
+//! Between `.02` and `.08`, most elements kept their XML tag names but a
+//! few things changed shape or name:
+//! - Some elements moved from a plain-text/enum value (`.02`) to a
+//!   `Cd`/`Prtry` choice (`.08`), e.g. `Sts` (entry status) and `AdrTp`
+//!   (address type). These are modelled with [`TextOrCodeChoice`], which
+//!   accepts either shape and exposes [`TextOrCodeChoice::code`] to read
+//!   the effective value regardless of which shape was used.
+//! - Some elements were renamed, e.g. `BIC` -> `BICFI` and `BICOrBEI` ->
+//!   `AnyBIC`. These are modelled with `#[serde(alias = "...")]` on the
+//!   original field so either tag name deserializes into the same field.
+//! - Some elements were added in `.08` (e.g. `LEI`, `Prxy`, `CdtLine/Tp`,
+//!   `CdtLine/Dt`, `Avlbty` on entries/balances). These are modelled as
+//!   additional `Option`/`Vec` fields that are simply absent when parsing
+//!   `.02` documents.
+//! - `CdtLine` became repeatable (`Vec` instead of `Option`) in `.08`.
 
 use crate::error::CamtError;
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, de::IgnoredAny};
 
 mod date_format {
     const FORMAT: &str = "%Y-%m-%d";
@@ -39,6 +59,45 @@ mod date_format {
                 .map(Some)
                 .map_err(serde::de::Error::custom)
         }
+    }
+}
+
+/// A value whose shape differs between ISO 20022 message versions: plain
+/// text/enum content in `camt.053.001.02` (e.g. `<Sts>BOOK</Sts>`) versus a
+/// `Cd`/`Prtry` choice in `camt.053.001.08` (e.g.
+/// `<Sts><Cd>BOOK</Cd></Sts>`). Deserializes either shape and exposes
+/// [`TextOrCodeChoice::code`] to retrieve the effective code regardless of
+/// which shape was used in the source document.
+///
+/// Not to be confused with [`CodeOrProprietary`], which models elements
+/// that already used a `Cd`/`Prtry` choice in `camt.053.001.02`.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, bound = "T: serde::de::DeserializeOwned")]
+pub struct TextOrCodeChoice<T> {
+    /// Value carried directly as element text (`.02`-style).
+    #[serde(rename = "$text", default)]
+    text: Option<T>,
+    /// Value carried in a `Cd` sub-element (`.08`-style).
+    #[serde(rename = "Cd", default)]
+    code: Option<T>,
+    /// Proprietary value carried in a `Prtry` sub-element (`.08`-style),
+    /// if present.
+    #[serde(rename = "Prtry")]
+    proprietary: Option<String>,
+}
+
+impl<T> TextOrCodeChoice<T> {
+    /// Returns the effective code value, regardless of whether the source
+    /// document used plain text/enum content (`.02`-style) or a `Cd`
+    /// sub-element (`.08`-style).
+    pub fn code(&self) -> Option<&T> {
+        self.text.as_ref().or(self.code.as_ref())
+    }
+
+    /// Returns the proprietary value, if present (only used by the
+    /// `Cd`/`Prtry` choice shape).
+    pub fn proprietary(&self) -> Option<&str> {
+        self.proprietary.as_deref()
     }
 }
 
@@ -114,6 +173,13 @@ pub struct Statement {
     /// Legal sequence number of the statement, if present.
     #[serde(rename = "LglSeqNb")]
     pub legal_sequence_number: Option<String>,
+    /// Statement pagination details, if present.
+    #[serde(rename = "StmtPgntn")]
+    pub statement_pagination: Option<Pagination>,
+    /// Sequence range of reports covered by this statement, if present
+    /// (only present in `camt.053.001.08` and later).
+    #[serde(rename = "RptgSeq")]
+    pub reporting_sequence: Option<SequenceRange>,
     /// Creation date and time of the statement.
     #[serde(rename = "CreDtTm")]
     pub creation_date_time: String, //NaiveDateTime,
@@ -159,6 +225,20 @@ pub struct FromToDate {
     /// End date and time of the covered period.
     #[serde(rename = "ToDtTm")]
     pub to_date_time: String, //NaiveDateTime,
+}
+
+/// `RptgSeq` - Sequence Range (choice of `FrSeq`/`ToSeq`; the
+/// `FrToSeq`/`EQSeq`/`NEQSeq` alternatives are rare for cash account
+/// statements and are not modelled here).
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SequenceRange {
+    /// Start of the sequence range, if present.
+    #[serde(rename = "FrSeq")]
+    pub from_sequence: Option<String>,
+    /// End of the sequence range, if present.
+    #[serde(rename = "ToSeq")]
+    pub to_sequence: Option<String>,
 }
 
 /// `RptgSrc` - Reporting Source (choice of `Cd`/`Prtry`).
@@ -240,12 +320,40 @@ pub struct Account {
     /// Name for this cash account, if present.
     #[serde(rename = "Nm")]
     pub name: Option<String>,
+    /// Proxy identification for this cash account, if present (only
+    /// present in `camt.053.001.08` and later).
+    #[serde(rename = "Prxy")]
+    pub proxy: Option<ProxyAccountIdentification>,
     /// Owner of the account, if present.
     #[serde(rename = "Ownr")]
     pub owner: Option<PartyIdentification>,
     /// Servicing financial institution for the account, if present.
     #[serde(rename = "Svcr")]
     pub servicer: Option<Agent>,
+}
+
+/// `Prxy` - Proxy Account Identification.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyAccountIdentification {
+    /// Type of this proxy account identification, if present.
+    #[serde(rename = "Tp")]
+    pub proxy_type: Option<ProxyAccountTypeChoice>,
+    /// Identifier for this proxy account identification.
+    #[serde(rename = "Id")]
+    pub identification: String,
+}
+
+/// `Tp` - Proxy Account Type (choice of `Cd`/`Prtry`).
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyAccountTypeChoice {
+    /// Code value for this proxy account type.
+    #[serde(rename = "Cd")]
+    pub code: Option<String>,
+    /// Proprietary value for this proxy account type, if present.
+    #[serde(rename = "Prtry")]
+    pub proprietary: Option<String>,
 }
 
 /// `Id` - Cash Account Identification (choice of `IBAN`/`Othr`).
@@ -318,6 +426,10 @@ pub struct BranchData {
     /// Identifier for this branch data.
     #[serde(rename = "Id")]
     pub identification: Option<String>,
+    /// Legal Entity Identifier of the branch, if present (only present in
+    /// `camt.053.001.08` and later).
+    #[serde(rename = "LEI")]
+    pub legal_entity_identifier: Option<String>,
     /// Name for this branch data, if present.
     #[serde(rename = "Nm")]
     pub name: Option<String>,
@@ -330,12 +442,17 @@ pub struct BranchData {
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FinancialInstitutionIdentification {
-    /// BIC of the financial institution, if present.
-    #[serde(rename = "BIC", default)]
+    /// BIC of the financial institution, if present. Renamed to `BICFI`
+    /// from `camt.053.001.08` onwards.
+    #[serde(rename = "BIC", alias = "BICFI", default)]
     pub bic: Option<String>,
     /// Clearing system member identification for this financial institution identification, if present.
     #[serde(rename = "ClrSysMmbId")]
     pub clearing_system_member_identification: Option<ClearingSystemMemberIdentification>,
+    /// Legal Entity Identifier of the financial institution, if present
+    /// (only present in `camt.053.001.08` and later).
+    #[serde(rename = "LEI")]
+    pub legal_entity_identifier: Option<String>,
     /// Name for this financial institution identification, if present.
     #[serde(rename = "Nm")]
     pub name: Option<String>,
@@ -402,9 +519,11 @@ pub struct FinancialIdentificationSchemeNameChoice {
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PostalAddress {
-    /// Address type for this shared by parties, agents and branches, if present.
+    /// Address type for this shared by parties, agents and branches, if
+    /// present. Plain text/enum in `camt.053.001.02`, a `Cd`/`Prtry`
+    /// choice from `camt.053.001.08` onwards.
     #[serde(rename = "AdrTp")]
-    pub address_type: Option<String>,
+    pub address_type: Option<TextOrCodeChoice<String>>,
     /// Department for this shared by parties, agents and branches, if present.
     #[serde(rename = "Dept")]
     pub department: Option<String>,
@@ -417,12 +536,36 @@ pub struct PostalAddress {
     /// Building number for this shared by parties, agents and branches, if present.
     #[serde(rename = "BldgNb")]
     pub building_number: Option<String>,
+    /// Building name for this shared by parties, agents and branches, if
+    /// present (only present in `camt.053.001.08` and later).
+    #[serde(rename = "BldgNm")]
+    pub building_name: Option<String>,
+    /// Floor for this shared by parties, agents and branches, if present
+    /// (only present in `camt.053.001.08` and later).
+    #[serde(rename = "Flr")]
+    pub floor: Option<String>,
+    /// Post box for this shared by parties, agents and branches, if
+    /// present (only present in `camt.053.001.08` and later).
+    #[serde(rename = "PstBx")]
+    pub post_box: Option<String>,
+    /// Room for this shared by parties, agents and branches, if present
+    /// (only present in `camt.053.001.08` and later).
+    #[serde(rename = "Room")]
+    pub room: Option<String>,
     /// Post code for this shared by parties, agents and branches, if present.
     #[serde(rename = "PstCd")]
     pub post_code: Option<String>,
     /// Town name for this shared by parties, agents and branches, if present.
     #[serde(rename = "TwnNm")]
     pub town_name: Option<String>,
+    /// Town location name for this shared by parties, agents and
+    /// branches, if present (only present in `camt.053.001.08` and later).
+    #[serde(rename = "TwnLctnNm")]
+    pub town_location_name: Option<String>,
+    /// District name for this shared by parties, agents and branches, if
+    /// present (only present in `camt.053.001.08` and later).
+    #[serde(rename = "DstrctNm")]
+    pub district_name: Option<String>,
     /// Country sub division for this shared by parties, agents and branches, if present.
     #[serde(rename = "CtrySubDvsn")]
     pub country_sub_division: Option<String>,
@@ -453,6 +596,29 @@ pub struct PartyIdentification {
     /// Contact details for the party, if present.
     #[serde(rename = "CtctDtls")]
     pub contact_details: Option<ContactDetails>,
+    /// Nested party, present instead of the fields above when the source
+    /// document used the `Party40Choice` shape introduced in
+    /// `camt.053.001.08` for `Dbtr`/`Cdtr`/`UltmtDbtr`/`UltmtCdtr`/
+    /// `TradgPty`/`InitgPty` within `RltdPties` (`<Dbtr><Pty>...</Pty></Dbtr>`
+    /// rather than `<Dbtr><Nm>...</Nm></Dbtr>`). Use [`Self::effective`] to
+    /// transparently read through this indirection.
+    #[serde(rename = "Pty")]
+    pub nested_party: Option<Box<PartyIdentification>>,
+    /// Agent, present instead of a party when the source document used the
+    /// `Party40Choice` shape (`<Dbtr><Agt>...</Agt></Dbtr>`) introduced in
+    /// `camt.053.001.08`.
+    #[serde(rename = "Agt")]
+    pub nested_agent: Option<Agent>,
+}
+
+impl PartyIdentification {
+    /// Returns the effective party fields, transparently following
+    /// [`Self::nested_party`] if the source document used the
+    /// `Party40Choice` (`Pty`/`Agt`) shape introduced in
+    /// `camt.053.001.08` instead of directly containing party fields.
+    pub fn effective(&self) -> &PartyIdentification {
+        self.nested_party.as_deref().unwrap_or(self)
+    }
 }
 
 /// `Id` - Party Identification (choice of `OrgId`/`PrvtId`).
@@ -471,9 +637,15 @@ pub struct PartyChoice {
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct OrganisationIdentification {
-    /// BIC or BEI identifying the organisation, if present.
-    #[serde(rename = "BICOrBEI", default)]
+    /// BIC or BEI identifying the organisation, if present. Renamed to
+    /// `AnyBIC` from `camt.053.001.08` onwards (BEI is no longer a valid
+    /// alternative from that version).
+    #[serde(rename = "BICOrBEI", alias = "AnyBIC", default)]
     pub bic_or_bei: Option<String>,
+    /// Legal Entity Identifier of the organisation, if present (only
+    /// present in `camt.053.001.08` and later).
+    #[serde(rename = "LEI")]
+    pub legal_entity_identifier: Option<String>,
     /// Additional alternate identifications for this organisation identification.
     #[serde(rename = "Othr", default)]
     pub other: Vec<GenericOrganisationIdentification>,
@@ -585,9 +757,29 @@ pub struct ContactDetails {
     /// Email address for this contact details, if present.
     #[serde(rename = "EmailAdr")]
     pub email_address: Option<String>,
+    /// Purpose of the email address for this contact details, if present
+    /// (only present in `camt.053.001.08` and later).
+    #[serde(rename = "EmailPurp")]
+    pub email_purpose: Option<String>,
+    /// Job title of the contact, if present (only present in
+    /// `camt.053.001.08` and later).
+    #[serde(rename = "JobTitl")]
+    pub job_title: Option<String>,
+    /// Responsibility of the contact, if present (only present in
+    /// `camt.053.001.08` and later).
+    #[serde(rename = "Rspnsblty")]
+    pub responsibility: Option<String>,
     /// Other contact detail, if present.
+    ///
+    /// Note: from `camt.053.001.08` onwards this element is structured
+    /// (`OtherContact1`, repeatable) rather than plain text; only the
+    /// `camt.053.001.02` plain-text shape is modelled here.
     #[serde(rename = "Othr")]
     pub other: Option<String>,
+    /// Preferred contact method, if present (only present in
+    /// `camt.053.001.08` and later).
+    #[serde(rename = "PrefrdMtd")]
+    pub preferred_method: Option<String>,
 }
 
 /// `TxsSummry` - Transactions Summary.
@@ -621,9 +813,24 @@ pub struct TotalEntries {
     /// Net amount for this total entries, if present.
     #[serde(rename = "TtlNetNtryAmt")]
     pub total_net_entry_amount: Option<Decimal>,
+    /// Total net entry for this total entries, if present.
+    #[serde(rename = "TtlNetNtry")]
+    pub total_net_entry: Option<TotalNetEntry>,
     /// Whether this total entries is credit or debit, if present.
     #[serde(rename = "CdtDbtInd")]
     pub credit_debit_indicator: Option<CreditDebitIndicator>,
+}
+
+/// `TtlNetNtry` - Total Net Entry.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TotalNetEntry {
+    /// Amount of the total net entry.
+    #[serde(rename = "Amt")]
+    pub amount: Decimal,
+    /// Whether the total net entry is credit or debit.
+    #[serde(rename = "CdtDbtInd")]
+    pub credit_debit_indicator: CreditDebitIndicator,
 }
 
 /// `TtlCdtNtries`/`TtlDbtNtries` - Number and Sum of Transactions.
@@ -651,6 +858,17 @@ pub struct TotalsPerBankTransactionCode {
     /// Net amount for this totals per bank transaction code, if present.
     #[serde(rename = "TtlNetNtryAmt")]
     pub total_net_entry_amount: Option<Decimal>,
+    /// Total net entry for this total entries, if present.
+    #[serde(rename = "TtlNetNtry")]
+    pub total_net_entry: Option<TotalNetEntry>,
+    /// Number and sum of credit entries for this bank transaction code, if
+    /// present (only present in `camt.053.001.08` and later).
+    #[serde(rename = "CdtNtries")]
+    pub credit_entries: Option<NumberAndSumOfTransactions>,
+    /// Number and sum of debit entries for this bank transaction code, if
+    /// present (only present in `camt.053.001.08` and later).
+    #[serde(rename = "DbtNtries")]
+    pub debit_entries: Option<NumberAndSumOfTransactions>,
     /// Whether this totals per bank transaction code is credit or debit, if present.
     #[serde(rename = "CdtDbtInd")]
     pub credit_debit_indicator: Option<CreditDebitIndicator>,
@@ -663,6 +881,10 @@ pub struct TotalsPerBankTransactionCode {
     /// Availability breakdowns for this bank transaction code.
     #[serde(rename = "Avlbty", default)]
     pub availability: Vec<CashBalanceAvailability>,
+    /// Date for these totals, if present (only present in
+    /// `camt.053.001.08` and later).
+    #[serde(rename = "Dt")]
+    pub date: Option<DateChoice>,
 }
 
 /// `Bal` - Cash Balance.
@@ -672,9 +894,10 @@ pub struct Balance {
     /// Type of balance being reported.
     #[serde(rename = "Tp")]
     pub balance_type: BalanceType,
-    /// Credit line associated with the balance, if present.
-    #[serde(rename = "CdtLine")]
-    pub credit_line: Option<CreditLine>,
+    /// Credit lines associated with the balance. A single `CdtLine` in
+    /// `camt.053.001.02`, repeatable from `camt.053.001.08` onwards.
+    #[serde(rename = "CdtLine", default)]
+    pub credit_line: Vec<CreditLine>,
     /// Amount of the balance.
     #[serde(rename = "Amt")]
     pub amount: Decimal,
@@ -684,6 +907,10 @@ pub struct Balance {
     /// Date associated with the balance.
     #[serde(rename = "Dt")]
     pub date: DateChoice,
+    /// Availability breakdowns for this balance, if present (only present
+    /// in `camt.053.001.08` and later).
+    #[serde(rename = "Avlbty", default)]
+    pub availability: Vec<CashBalanceAvailability>,
 }
 
 /// `CdtLine` - Credit Line.
@@ -693,9 +920,29 @@ pub struct CreditLine {
     /// Whether the credit line is included in the balance.
     #[serde(rename = "Incl")]
     pub included: bool,
+    /// Type of the credit line, if present (only present in
+    /// `camt.053.001.08` and later).
+    #[serde(rename = "Tp")]
+    pub credit_line_type: Option<CreditLineTypeChoice>,
     /// Amount of the credit line, if present.
     #[serde(rename = "Amt")]
     pub amount: Option<Decimal>,
+    /// Date of the credit line, if present (only present in
+    /// `camt.053.001.08` and later).
+    #[serde(rename = "Dt")]
+    pub date: Option<DateChoice>,
+}
+
+/// `Tp` - Credit Line Type (choice of `Cd`/`Prtry`).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CreditLineTypeChoice {
+    /// Code value for this credit line type.
+    #[serde(rename = "Cd")]
+    pub code: Option<String>,
+    /// Proprietary value for this credit line type, if present.
+    #[serde(rename = "Prtry")]
+    pub proprietary: Option<String>,
 }
 
 /// `Tp` - Balance Type.
@@ -738,26 +985,45 @@ pub struct CodeOrProprietary {
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 pub enum BalanceTypeCode {
-    /// Expected closing booked balance.
-    XPCD, // Expected Closing Booked Balance
-    /// Opening available balance.
-    OPAV, // Opening Available Balance
+    /// Opening Available Balance.
+    /// The funds at the user's disposal at the start of the period.
+    OPAV,
+
     /// Interim available balance.
-    ITAV, // Interim Available Balance
+    /// The mid-day or real-time spendable funds.
+    ITAV,
+
     /// Closing available balance.
-    CLAV, // Closing Available Balance - Closing balance of amount of money that is at the disposal of the account owner on the date specified
+    /// The finalized spendable funds at the end of the period.
+    CLAV,
+
     /// Forward available balance.
-    FWAV, // Forward Available Balance - Forward available balance of amount of money that is at the disposal of the account owner on the date specified
-    /// Closing booked balance.
-    CLBD, // Closing Booked Balance - Balance of the account at the end of the pre-agreed account reporting period.
-    /// Interim booked balance.
-    ITBD, // Interim Booked Balance
+    /// Future funds available on a specific forward value date.
+    FWAV,
+
     /// Opening booked balance.
-    OPBD, // Opening Booked Balance
+    /// The official ledger balance starting the period.
+    OPBD,
+
+    /// Interim booked balance.
+    /// The intraday ledger balance as transactions post.
+    ITBD,
+
+    /// Closing booked balance.
+    /// The final ledger balance ending the reporting period.
+    CLBD,
+
     /// Previous closing booked balance.
-    PRCD, // Closing book balance of the previous day - Represents the closing book balance of the previous day.
+    /// The ledger balance from the prior period (which must match OPBD).
+    PRCD,
+
+    /// Expected closing booked balance.
+    /// An anticipated final ledger balance based on pending items.
+    XPCD,
+
     /// Informational balance.
-    INFO, // Information Balance
+    /// Used for non-ledger, non-liquid reporting context.
+    INFO,
 }
 
 /// `DateAndDateTimeChoice` - `Dt` (date only) or `DtTm` (date and time).
@@ -798,10 +1064,10 @@ pub enum CreditDebitIndicator {
     CRDT,
 }
 
-/// `EntryStatus2Code` - Entry status.
+/// `EntryStatus2Code`/`ExternalEntryStatus1Code` - Entry status.
 #[allow(clippy::upper_case_acronyms)]
-#[derive(Debug, Deserialize, PartialEq)]
-pub enum EntryStatus {
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+pub enum EntryStatusCode {
     /// Booked entry.
     BOOK,
     /// Pending entry.
@@ -826,18 +1092,24 @@ pub struct Entry {
     /// Whether the entry is a reversal, if present.
     #[serde(rename = "RvslInd")]
     pub reversal_indicator: Option<bool>,
-    /// Booking status of the entry.
+    /// Booking status of the entry. Plain text/enum in
+    /// `camt.053.001.02`, a `Cd`/`Prtry` choice from `camt.053.001.08`
+    /// onwards; use [`TextOrCodeChoice::code`] to get the effective code.
     #[serde(rename = "Sts")]
-    pub status: EntryStatus,
-    /// Booking date of the entry.
+    pub status: TextOrCodeChoice<EntryStatusCode>,
+    /// Booking date of the entry, if present.
     #[serde(rename = "BookgDt")]
-    pub booking_date: DateChoice,
-    /// Value date of the entry.
+    pub booking_date: Option<DateChoice>,
+    /// Value date of the entry, if present.
     #[serde(rename = "ValDt")]
-    pub value_date: DateChoice,
+    pub value_date: Option<DateChoice>,
     /// Reference assigned by the account servicer, if present.
     #[serde(rename = "AcctSvcrRef")]
     pub account_servicer_reference: Option<String>,
+    /// Availability breakdowns for this entry, if present (only present
+    /// in `camt.053.001.08` and later).
+    #[serde(rename = "Avlbty", default)]
+    pub availability: Vec<CashBalanceAvailability>,
     /// Bank transaction code for the entry, if present.
     #[serde(rename = "BkTxCd")]
     pub bank_transaction_code: Option<BankTransactionCodeStructure>,
@@ -916,7 +1188,7 @@ pub struct ProprietaryBankTransactionCodeStructure {
 }
 
 /// `Avlbty` - Cash Balance Availability.
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CashBalanceAvailability {
     /// Date for this cash balance availability.
@@ -931,7 +1203,7 @@ pub struct CashBalanceAvailability {
 }
 
 /// `Dt` - Cash Balance Availability Date (choice of `NbOfDays`/`ActlDt`).
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CashBalanceAvailabilityDate {
     /// Number of days for this cash balance availability date, if present.
@@ -996,6 +1268,9 @@ pub struct Amount {
     /// Currency and value of the amount.
     #[serde(rename = "Amt")]
     pub amount: CurrencyAndAmount,
+    /// Currency exchange information (ignored for now).
+    #[serde(rename = "CcyXchg")]
+    pub currency_exchange_information: Option<IgnoredAny>,
 }
 
 /// `AmtDtls` - Amount Details.
@@ -1018,8 +1293,19 @@ pub struct TransactionDetails {
     #[serde(rename = "Refs")]
     pub references: Option<TransactionReferences>,
     /// Amount breakdown for the transaction, if present.
+    #[serde(rename = "Amt")]
+    pub amount: Option<CurrencyAndAmount>,
+    /// Whether this transaction is credit or debit, if present.
+    #[serde(rename = "CdtDbtInd")]
+    pub credit_debit_indicator: Option<CreditDebitIndicator>,
+    /// Amount breakdown for the transaction, if present.
     #[serde(rename = "AmtDtls")]
     pub amount_details: Option<AmountDetails>,
+    /// Availability breakdowns for this transaction, if present (present
+    /// in both schema versions, but not commonly used for retail
+    /// statements).
+    #[serde(rename = "Avlbty", default)]
+    pub availability: Vec<CashBalanceAvailability>,
     /// Bank transaction code for the transaction, if present.
     #[serde(rename = "BkTxCd")]
     pub bank_transaction_code: Option<BankTransactionCodeStructure>,
@@ -1044,6 +1330,9 @@ pub struct TransactionDetails {
     /// Additional transaction information, if present.
     #[serde(rename = "AddtlTxInf")]
     pub additional_transaction_information: Option<String>,
+    /// Return Reason Information (ignored for now).
+    #[serde(rename = "RtrInf")]
+    pub return_reason_information: Option<IgnoredAny>,
 }
 
 /// `Refs` - Transaction References.
@@ -1077,9 +1366,31 @@ pub struct TransactionReferences {
     /// Clearing system reference for this transaction references, if present.
     #[serde(rename = "ClrSysRef")]
     pub clearing_system_reference: Option<String>,
-    /// Proprietary value for this transaction references, if present.
-    #[serde(rename = "Prtry")]
-    pub proprietary: Option<ProprietaryReference>,
+    /// Unique end-to-end transaction reference (UETR), if present (only
+    /// present in `camt.053.001.08` and later).
+    #[serde(rename = "UETR")]
+    pub unique_end_to_end_transaction_reference: Option<String>,
+    /// Identification assigned by the account owner, if present (only
+    /// present in `camt.053.001.08` and later).
+    #[serde(rename = "AcctOwnrTxId")]
+    pub account_owner_transaction_identification: Option<String>,
+    /// Identification assigned by the account servicer, if present (only
+    /// present in `camt.053.001.08` and later).
+    #[serde(rename = "AcctSvcrTxId")]
+    pub account_servicer_transaction_identification: Option<String>,
+    /// Identification assigned by a market infrastructure, if present
+    /// (only present in `camt.053.001.08` and later).
+    #[serde(rename = "MktInfrstrctrTxId")]
+    pub market_infrastructure_transaction_identification: Option<String>,
+    /// Processing identification, if present (only present in
+    /// `camt.053.001.08` and later).
+    #[serde(rename = "PrcgId")]
+    pub processing_identification: Option<String>,
+    /// Proprietary values for this transaction references. A single
+    /// `Prtry` in `camt.053.001.02`, repeatable from `camt.053.001.08`
+    /// onwards.
+    #[serde(rename = "Prtry", default)]
+    pub proprietary: Vec<ProprietaryReference>,
 }
 
 /// `Prtry` - Proprietary Reference.
@@ -1098,6 +1409,14 @@ pub struct ProprietaryReference {
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TransactionAgents {
+    /// Instructing agent for the transaction, if present (only present in
+    /// `camt.053.001.08` and later).
+    #[serde(rename = "InstgAgt")]
+    pub instructing_agent: Option<Agent>,
+    /// Instructed agent for the transaction, if present (only present in
+    /// `camt.053.001.08` and later).
+    #[serde(rename = "InstdAgt")]
+    pub instructed_agent: Option<Agent>,
     /// Debtor for the transaction, if present.
     #[serde(rename = "DbtrAgt")]
     pub debtor_agent: Option<Agent>,
@@ -1161,15 +1480,41 @@ pub struct RemittanceLocation {
     /// Remittance identification for this remittance location, if present.
     #[serde(rename = "RmtId")]
     pub remittance_identification: Option<String>,
-    /// Remittance location method for this remittance location, if present.
+    /// Remittance location method for this remittance location, if
+    /// present (`camt.053.001.02`-style; from `camt.053.001.08` onwards
+    /// this information is carried in [`Self::location_details`] instead).
     #[serde(rename = "RmtLctnMtd")]
     pub remittance_location_method: Option<String>,
-    /// Remittance location electronic address for this remittance location, if present.
+    /// Remittance location electronic address for this remittance
+    /// location, if present (`camt.053.001.02`-style; see
+    /// [`Self::location_details`] for `camt.053.001.08`).
     #[serde(rename = "RmtLctnElctrncAdr")]
     pub remittance_location_electronic_address: Option<String>,
-    /// Remittance location postal address for this remittance location, if present.
+    /// Remittance location postal address for this remittance location,
+    /// if present (`camt.053.001.02`-style; see [`Self::location_details`]
+    /// for `camt.053.001.08`).
     #[serde(rename = "RmtLctnPstlAdr")]
     pub remittance_location_postal_address: Option<NameAndAddress>,
+    /// Remittance location details, repeatable (only present in
+    /// `camt.053.001.08` and later, replacing the flat
+    /// `RmtLctnMtd`/`RmtLctnElctrncAdr`/`RmtLctnPstlAdr` fields above).
+    #[serde(rename = "RmtLctnDtls", default)]
+    pub location_details: Vec<RemittanceLocationDetail>,
+}
+
+/// `RmtLctnDtls` - Remittance Location Data.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RemittanceLocationDetail {
+    /// Method used for this remittance location detail.
+    #[serde(rename = "Mtd")]
+    pub method: String,
+    /// Electronic address for this remittance location detail, if present.
+    #[serde(rename = "ElctrncAdr")]
+    pub electronic_address: Option<String>,
+    /// Postal address for this remittance location detail, if present.
+    #[serde(rename = "PstlAdr")]
+    pub postal_address: Option<NameAndAddress>,
 }
 
 /// `RmtLctnPstlAdr` - Name and Address.

@@ -12,7 +12,7 @@ Bank-to-Customer Statement) files and converting them to **MT940** format.
 
 - Parse `camt.053.001.02` XML statements (including from `.zip` archives)
 - Reduce the verbose CAMT.053 schema into a simple, ergonomic model
-  (`SimpleStatement` / `SimpleTransaction`)
+  (`SimpleStatements` / `SimpleStatement` / `SimpleTransaction`)
 - Use this simplified model to import CAMT.053 statements into your own
   applications
 - Convert statements to MT940 text format, for use in legacy banking software
@@ -58,10 +58,10 @@ camt053 --mt940 statement.xml
 ## Library usage
 
 ```rust,no_run
-use camt053::SimpleStatement;
+use camt053::SimpleStatements;
 
-let statements = SimpleStatement::load("statement.xml")?;
-for statement in &statements {
+let statements = SimpleStatements::load("statement.xml")?;
+for statement in &statements.statements {
     println!("Account: {}", statement.account);
     for transaction in &statement.transactions {
         println!("{transaction}");
@@ -77,7 +77,7 @@ Look at the [examples](examples/) for more usage examples.
 Tested with statements from the following banks:
 
 - ABN AMRO
-- Rabobank
+- Rabobank (2009 and 2019 formats)
 - SNS Bank (ASN Bank)
 - ING Bank
 

@@ -23,6 +23,10 @@ pub enum CamtError {
     #[error("Failed to parse camt.053 XML: {0}")]
     Xml(#[from] quick_xml::DeError),
 
+    /// Serializing a [`crate::simple::SimpleStatement`] to camt.053 XML failed.
+    #[error("Failed to write camt.053 XML: {0}")]
+    XmlWrite(#[from] quick_xml::SeError),
+
     /// The input could not be parsed as valid camt.053 XML, with the byte
     /// offset (and a snippet of the surrounding input) where parsing failed.
     #[error(

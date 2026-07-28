@@ -40,26 +40,12 @@ pub struct SimpleTransaction {
     pub counter_iban: Option<String>,
     /// Name of the counterparty, if known.
     pub counter_name: Option<String>,
-    /// Free-text description of the transaction (remittance information or
-    /// bank-supplied additional info).
+    /// Free-text description of the transaction
     pub description: String,
 }
 
 impl SimpleTransaction {
     fn from_entry(account: &str, entry: &schema::Entry) -> Result<Self, CamtError> {
-        let description = if account.contains("ABNA") {
-            let description = entry.description(account)?;
-            if description.contains("/REMI/") {
-                let sepa = super::abnamro::SepaTransaction::parse(&description);
-                sepa.remittance_info.unwrap_or(description)
-            } else {
-                abnamro_clean_description(&entry.description(account)?)
-            }
-        } else {
-            entry.description(account)?
-        };
-        let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
-
         // let counter_name = if let Some(name) = entry.counter_name() {
         //     Some(name.trim().to_string())
         // } else if account_iban.contains("ABNA") {
@@ -80,8 +66,25 @@ impl SimpleTransaction {
             amount: entry.amount(),
             counter_iban: entry.counter_iban(),
             counter_name: entry.counter_name(),
-            description,
+            description: entry.description(account)?,
         })
+    }
+
+    /// Cleans up the description of a transaction, removing unnecessary whitespace and
+    /// replacing SEPA tags with their corresponding values when possible (ABN AMRO).
+    pub fn clean_description(&self) -> String {
+        let description = if self.account.contains("ABNA") {
+            let description = self.description.clone();
+            if description.contains("/REMI/") {
+                let sepa = super::abnamro::SepaTransaction::parse(&description);
+                sepa.remittance_info.unwrap_or(description)
+            } else {
+                abnamro_clean_description(&self.description)
+            }
+        } else {
+            self.description.clone()
+        };
+        description.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 }
 
@@ -95,7 +98,7 @@ impl Display for SimpleTransaction {
             self.counter_iban.as_deref().unwrap_or("(no IBAN)"),
             ellipsis_middle(self.counter_name.as_deref().unwrap_or("(no name)"), 50),
             "",
-            ellipsis_end(&self.description, 80),
+            ellipsis_end(&self.clean_description(), 80),
         )
     }
 }
@@ -119,46 +122,14 @@ pub struct SimpleStatement {
     pub transactions: Vec<SimpleTransaction>,
 }
 
+/// A collection of statements, similar to a CAMT.053 Document.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimpleStatements {
+    /// The statements contained in this collection.
+    pub statements: Vec<SimpleStatement>,
+}
+
 impl SimpleStatement {
-    /// Parses the given camt.053 file (plain `.xml` or `.zip` containing several `.xml` files)
-    /// and reduces it to the simplified, format agnostic statement structs.
-    ///
-    /// The format is detected from the file's contents (see [`Self::from_reader`]),
-    /// not from the file extension.
-    pub fn load<T: AsRef<Path>>(camt_file: T) -> Result<Vec<SimpleStatement>, CamtError> {
-        let file = File::open(camt_file)?;
-        Self::from_reader(BufReader::new(file))
-    }
-
-    /// Parses camt.053 data from any reader, transparently handling both a
-    /// plain XML document and a `.zip` archive containing several `.xml`
-    /// files. The format is detected from the data itself (a leading `PK`
-    /// signature indicates a zip archive), so callers don't need to know
-    /// the source's format in advance (e.g. an upload without a reliable
-    /// filename/extension).
-    pub fn from_reader<R: Read>(mut reader: R) -> Result<Vec<SimpleStatement>, CamtError> {
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data)?;
-
-        let statements = if data.starts_with(b"PK") {
-            let mut archive = zip::ZipArchive::new(Cursor::new(data))?;
-            let mut statements = Vec::new();
-            for i in 0..archive.len() {
-                let file = archive.by_index(i)?;
-                if file.name().ends_with(".xml") {
-                    let reader = BufReader::new(file);
-                    let doc = Document::from_reader(reader)?;
-                    statements.extend(Self::from_document(&doc)?);
-                }
-            }
-            statements
-        } else {
-            let doc = Document::from_reader(data.as_slice())?;
-            Self::from_document(&doc)?
-        };
-        merge_statements(statements)
-    }
-
     /// Builds a [`SimpleStatement`] from a raw `schema::Statement`,
     /// validating that the opening/closing balances match the transaction
     /// sum.
@@ -220,6 +191,73 @@ impl SimpleStatement {
     /// Converts a full camt.053 [`Document`] into a list of [`SimpleStatement`]s.
     pub fn from_document(doc: &Document) -> Result<Vec<SimpleStatement>, CamtError> {
         doc.statements().iter().map(Self::from_statement).collect()
+    }
+}
+
+impl SimpleStatements {
+    /// Parses the given camt.053 file (plain `.xml` or `.zip` containing several `.xml` files)
+    /// and reduces it to the simplified, format agnostic statement structs.
+    ///
+    /// The format is detected from the file's contents (see [`Self::from_reader`]),
+    /// not from the file extension.
+    pub fn load<T: AsRef<Path>>(camt_file: T) -> Result<Self, CamtError> {
+        let file = File::open(camt_file)?;
+        Self::from_reader(BufReader::new(file))
+    }
+
+    /// Parses camt.053 data from any reader, transparently handling both a
+    /// plain XML document and a `.zip` archive containing several `.xml`
+    /// files. The format is detected from the data itself (a leading `PK`
+    /// signature indicates a zip archive), so callers don't need to know
+    /// the source's format in advance (e.g. an upload without a reliable
+    /// filename/extension).
+    pub fn from_reader<R: Read>(mut reader: R) -> Result<Self, CamtError> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data)?;
+
+        let statements = if data.starts_with(b"PK") {
+            let mut archive = zip::ZipArchive::new(Cursor::new(data))?;
+            let mut statements = Vec::new();
+            for i in 0..archive.len() {
+                let file = archive.by_index(i)?;
+                if file.name().ends_with(".xml") {
+                    let reader = BufReader::new(file);
+                    let doc = Document::from_reader(reader)?;
+                    statements.extend(Self::vec_from_document(&doc)?);
+                }
+            }
+            statements
+        } else {
+            let doc = Document::from_reader(data.as_slice())?;
+            Self::vec_from_document(&doc)?
+        };
+        let statements = merge_statements(statements)?;
+        Ok(Self { statements })
+    }
+
+    /// Converts a full camt.053 [`Document`] into a list of [`SimpleStatement`]s.
+    fn vec_from_document(doc: &Document) -> Result<Vec<SimpleStatement>, CamtError> {
+        doc.statements()
+            .iter()
+            .map(SimpleStatement::from_statement)
+            .collect()
+    }
+
+    /// Converts a full camt.053 [`Document`] into [`SimpleStatements`].
+    pub fn from_document(doc: &Document) -> Result<Self, CamtError> {
+        Ok(Self {
+            statements: Self::vec_from_document(doc)?,
+        })
+    }
+}
+
+/// Iterator for &SimpleStatements (Shared References)
+impl<'a> IntoIterator for &'a SimpleStatements {
+    type Item = &'a SimpleStatement;
+    type IntoIter = std::slice::Iter<'a, SimpleStatement>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.statements.iter()
     }
 }
 

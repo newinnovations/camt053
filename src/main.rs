@@ -1,4 +1,4 @@
-use camt053::{CamtError, SimpleStatement};
+use camt053::{CamtError, SimpleStatements};
 use clap::Parser;
 use std::{fs::File, io::Write, process::ExitCode};
 
@@ -20,10 +20,14 @@ pub struct Args {
     /// Export to MT940 format instead of printing the transactions
     #[arg(short, long, default_value_t = false, value_name = "MT940")]
     mt940: bool,
+
+    /// Combine (export) all statements into a single CAMT.053 file
+    #[arg(short, long, value_name = "CAMT.053 FILE")]
+    combine: Option<String>,
 }
 
 fn run(args: &Args) -> Result<(), CamtError> {
-    let statements = SimpleStatement::load(&args.filename)?;
+    let statements = SimpleStatements::load(&args.filename)?;
 
     if args.mt940 {
         for statement in &statements {
@@ -68,6 +72,12 @@ fn run(args: &Args) -> Result<(), CamtError> {
                 }
             }
             println!();
+        }
+
+        if let Some(combined_filename) = &args.combine {
+            let mut f = File::create(combined_filename)?;
+            f.write_all(statements.to_camt053()?.as_bytes())?;
+            println!("Wrote combined CAMT.053 file {combined_filename}");
         }
     }
 

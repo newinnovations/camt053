@@ -202,12 +202,18 @@ impl Entry {
 
     /// The value date of this entry.
     pub fn val_date(&self) -> Result<NaiveDate, CamtError> {
-        self.value_date.date()
+        self.value_date
+            .as_ref()
+            .ok_or(CamtError::MissingDate)?
+            .date()
     }
 
     /// The booking date of this entry.
     pub fn book_date(&self) -> Result<NaiveDate, CamtError> {
-        self.booking_date.date()
+        self.booking_date
+            .as_ref()
+            .ok_or(CamtError::MissingDate)?
+            .date()
     }
 
     /// The single `RltdPties` block of this entry's (sole) transaction
@@ -226,7 +232,7 @@ impl Entry {
             schema::CreditDebitIndicator::CRDT => related_parties.debtor.as_ref(),
             schema::CreditDebitIndicator::DBIT => related_parties.creditor.as_ref(),
         };
-        party?.name.clone()
+        party?.effective().name.clone()
     }
 
     /// IBAN of the counterparty account: the debtor account for an incoming
@@ -270,7 +276,7 @@ impl Entry {
             if let Some(rmtinf) = rmtinf.and_then(|rmtinf| rmtinf.unstructured.first()) {
                 Ok(rmtinf.clone())
             } else {
-                Ok("no details".to_string())
+                Ok(Default::default())
             }
         }
     }
