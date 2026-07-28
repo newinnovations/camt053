@@ -23,13 +23,13 @@
 //! # Ok::<(), camt053::CamtError>(())
 //! ```
 //!
-//! [`SimpleStatement::load`] also accepts a `.zip` archive containing one or
+//! [`SimpleStatements::load`] also accepts a `.zip` archive containing one or
 //! more camt.053 XML files (as commonly delivered by banks for multi-day
 //! exports); the contained statements are merged per account.
 //!
 //! # Feature overview
 //!
-//! - [`SimpleStatement::load`] — parse a `.xml` file (or `.zip` archive) into
+//! - [`SimpleStatements::load`] — parse a `.xml` file (or `.zip` archive) into
 //!   a list of [`SimpleStatement`]s, one per account.
 //! - [`SimpleStatement::to_mt940`] — render a statement as an MT940 message.
 //! - [`CamtError`] — the single error type returned by all fallible

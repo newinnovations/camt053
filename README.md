@@ -30,7 +30,7 @@ As a library, add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-camt053 = "0.3"
+camt053 = "0.4"
 ```
 
 The `clap` dependency (used only for the `camt053` command-line binary) is
@@ -39,7 +39,7 @@ the library and want to avoid pulling in `clap`, disable default features:
 
 ```toml
 [dependencies]
-camt053 = { version = "0.3", default-features = false }
+camt053 = { version = "0.4", default-features = false }
 ```
 
 ## Command-line usage

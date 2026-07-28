@@ -10,7 +10,7 @@ impl Document {
     /// Parses a camt.053 XML file at `source` into the full `Document`.
     ///
     /// This is the full, verbose ISO 20022 representation; most callers should
-    /// prefer [`crate::SimpleStatement::load`] instead.
+    /// prefer [`crate::SimpleStatements::load`] instead.
     pub fn load(source: impl AsRef<Path>) -> Result<Self, CamtError> {
         let file = File::open(source)?;
         Self::from_reader(file)
