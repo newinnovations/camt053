@@ -194,6 +194,16 @@ impl SimpleStatement {
     }
 }
 
+/// Iterator for &SimpleStatement over its contained SimpleTransaction items.
+impl<'a> IntoIterator for &'a SimpleStatement {
+    type Item = &'a SimpleTransaction;
+    type IntoIter = std::slice::Iter<'a, SimpleTransaction>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.transactions.iter()
+    }
+}
+
 impl SimpleStatements {
     /// Parses the given camt.053 file (plain `.xml` or `.zip` containing several `.xml` files)
     /// and reduces it to the simplified, format agnostic statement structs.
@@ -251,7 +261,7 @@ impl SimpleStatements {
     }
 }
 
-/// Iterator for &SimpleStatements (Shared References)
+/// Iterator for &SimpleStatements over its contained SimpleStatement items.
 impl<'a> IntoIterator for &'a SimpleStatements {
     type Item = &'a SimpleStatement;
     type IntoIter = std::slice::Iter<'a, SimpleStatement>;

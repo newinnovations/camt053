@@ -59,7 +59,7 @@ fn run(args: &Args) -> Result<(), CamtError> {
                     println!("No transactions");
                 } else {
                     println!("Transactions:");
-                    for transaction in &statement.transactions {
+                    for transaction in statement {
                         println!("{transaction}");
                         if args.r#ref {
                             if let Some(reference) = &transaction.reference {

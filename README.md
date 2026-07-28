@@ -61,9 +61,9 @@ camt053 --mt940 statement.xml
 use camt053::SimpleStatements;
 
 let statements = SimpleStatements::load("statement.xml")?;
-for statement in &statements.statements {
+for statement in &statements {
     println!("Account: {}", statement.account);
-    for transaction in &statement.transactions {
+    for transaction in statement {
         println!("{transaction}");
     }
 }

@@ -7,7 +7,7 @@ fn main() {
 
     let statements = SimpleStatements::load(&camt_file).expect("Failed to load CAMT.053 file");
 
-    statements.into_iter().for_each(|statement| {
+    for statement in &statements {
         println!("            account: {}", statement.account);
         println!(
             "           currency: {}",
@@ -22,7 +22,7 @@ fn main() {
             statement.closing_amount, statement.closing_date
         );
         println!();
-        for transaction in &statement.transactions {
+        for transaction in statement {
             println!(
                 "          reference: {}",
                 transaction.reference.as_deref().unwrap_or("-")
@@ -45,5 +45,5 @@ fn main() {
             println!();
         }
         println!();
-    });
+    }
 }

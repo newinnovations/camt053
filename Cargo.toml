@@ -1,6 +1,6 @@
 [package]
 name = "camt053"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "CAMT.053 (ISO 20022) bank statement parser and MT940 converter"
 authors = ["Martin van der Werff <github@newinnovations.nl>"]
