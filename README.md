@@ -10,7 +10,7 @@ Bank-to-Customer Statement) files and converting them to **MT940** format.
 
 ## Features
 
-- Parse `camt.053.001.02` XML statements (including from `.zip` archives)
+- Parse `camt.053.001.02` and `camt.053.001.08` XML statements (including from `.zip` archives)
 - Reduce the verbose CAMT.053 schema into a simple, ergonomic model
   (`SimpleStatements` / `SimpleStatement` / `SimpleTransaction`)
 - Use this simplified model to import CAMT.053 statements into your own

@@ -179,6 +179,8 @@ struct DateChoice {
 /// `ReportEntry2`
 #[derive(Debug, Serialize)]
 struct Entry {
+    #[serde(rename = "NtryRef", skip_serializing_if = "Option::is_none")]
+    ntry_ref: Option<String>,
     #[serde(rename = "Amt")]
     amt: Amount,
     #[serde(rename = "CdtDbtInd")]
@@ -321,7 +323,9 @@ impl Entry {
         } else {
             "CRDT"
         };
+        let reference = tx.reference.as_ref().filter(|r| !r.is_empty());
         Entry {
+            ntry_ref: reference.cloned(),
             amt: Amount {
                 ccy: currency.to_string(),
                 value: tx.amount.abs(),
@@ -330,7 +334,7 @@ impl Entry {
             sts: "BOOK",
             bookg_dt: DateChoice { dt: tx.book_date },
             val_dt: DateChoice { dt: tx.value_date },
-            acct_svcr_ref: tx.reference.clone().filter(|r| !r.is_empty()),
+            acct_svcr_ref: reference.cloned(),
             bk_tx_cd: BankTransactionCode {},
             ntry_dtls: vec![EntryDetails {
                 tx_dtls: vec![TxDetails::from(tx)],

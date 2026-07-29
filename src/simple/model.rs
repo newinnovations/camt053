@@ -46,21 +46,13 @@ pub struct SimpleTransaction {
 
 impl SimpleTransaction {
     fn from_entry(account: &str, entry: &schema::Entry) -> Result<Self, CamtError> {
-        // let counter_name = if let Some(name) = entry.counter_name() {
-        //     Some(name.trim().to_string())
-        // } else if account_iban.contains("ABNA") {
-        //     Some("ABN AMRO Bank".to_string())
-        // } else if account_iban.contains("SNSB") {
-        //     Some("ASN Bank (SNS)".to_string())
-        // } else if account_iban.contains("INGB") {
-        //     Some("ING Bank".to_string())
-        // } else {
-        //     None
-        // };
-
         Ok(SimpleTransaction {
             account: account.to_string(),
-            reference: entry.reference.clone(),
+            reference: entry
+                .reference
+                .as_ref()
+                .or(entry.account_servicer_reference.as_ref())
+                .cloned(),
             book_date: entry.book_date()?,
             value_date: entry.val_date()?,
             amount: entry.amount(),
@@ -205,6 +197,18 @@ impl<'a> IntoIterator for &'a SimpleStatement {
 }
 
 impl SimpleStatements {
+    /// Creates an empty [`SimpleStatements`] collection.
+    pub fn new() -> Self {
+        Self {
+            statements: Vec::new(),
+        }
+    }
+
+    /// Appends the statements from another [`SimpleStatements`] collection to this one.
+    pub fn extend(&mut self, other: Self) {
+        self.statements.extend(other.statements);
+    }
+
     /// Parses the given camt.053 file (plain `.xml` or `.zip` containing several `.xml` files)
     /// and reduces it to the simplified, format agnostic statement structs.
     ///
@@ -261,6 +265,13 @@ impl SimpleStatements {
     }
 }
 
+/// Implements [`Default`] for [`SimpleStatements`], returning an empty collection.
+impl Default for SimpleStatements {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Iterator for &SimpleStatements over its contained SimpleStatement items.
 impl<'a> IntoIterator for &'a SimpleStatements {
     type Item = &'a SimpleStatement;
@@ -271,8 +282,8 @@ impl<'a> IntoIterator for &'a SimpleStatements {
     }
 }
 
-/// Merges the (typically daily) statements of a zipped camt.053 export into a
-/// single [`SimpleStatement`] per account (IBAN).
+/// Merges the (typically daily) statements of a zipped camt.053 export
+/// into a single [`SimpleStatement`] per account (IBAN).
 ///
 /// Statements for the same account are sorted by opening date and their
 /// transactions concatenated in that order. Consecutive statements are
